@@ -2,7 +2,7 @@
 const siteMetadata = {
   title: '网安菜鸟成长之路',
   author: 'Rassel',
-  headerTitle: 'TailwindBlog',
+  headerTitle: 'RasselBlog',
   description: '一个网安小白记录自己的成长之路',
   language: 'en-us',
   theme: 'system', // system, dark or light
