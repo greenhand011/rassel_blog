@@ -1,0 +1,411 @@
+---
+title: '使用Python Pandas清洗十万条Web日志的实战笔记'
+date: '2025-12-14'
+tags: ['AI安全', '数据处理', '网络安全']
+draft: false
+summary: '一次从 error.log 与 pcap 流量入手，使用 Python + Pandas 完成真实 Web 安全数据清洗与分析的实践记录。'
+---
+
+## 一、为什么要做"安全数据处理"
+
+在传统 Web 安全学习过程中，我们更多关注的是漏洞原理、Payload 构造以及利用效果。但在真实企业环境中，安全工程师每天面对的并不是单个漏洞，而是**海量日志与流量数据**。
+
+如果无法将这些数据结构化、清洗干净，那么无论是安全运营、异常检测，还是后续引入机器学习与 AI，都无从谈起。
+
+因此，本次实践的目标非常明确：
+
+> 使用 Python + Pandas，对真实 Web 日志和网络流量进行一次完整的数据清洗与基础分析。
+
+---
+
+## 二、数据来源说明
+
+本次实践选取了两类最常见、也最具有代表性的安全数据源。
+
+### 1. Web 服务 error.log
+
+`error.log` 来源于 Apache / Nginx Web 服务，主要记录脚本不存在、路径访问错误等异常信息，例如：
+
+```
+[Mon Sep 29 14:38:42.192842 2025] [:error]
+[client 192.168.192.1:54321] script '/var/www/html/test.php' not found
+```
+
+这类日志在实际安全工作中，常用于：
+
+- 发现扫描器和自动化探测行为
+- 统计被频繁探测的敏感路径
+- 分析异常访问模式
+
+<img src="/static/images/ai_log_pcapng/error_log.png" alt="error.log 原始日志截图" width="700" />
+
+---
+
+### 2. pcapng 网络流量文件
+
+通过 Wireshark 抓取实验环境中的网络流量，并导出为 CSV，用于后续分析。
+
+流量中主要包含：
+
+- ARP 广播
+- TCP 连接建立与关闭
+- HTTP 请求与响应
+
+<img
+  src="/static/images/ai_log_pcapng/wireshark_capture.png"
+  alt="Wireshark 抓包界面"
+  width="700"
+/>
+
+---
+
+## 三、error.log 的数据清洗流程
+
+### 1. 正则解析日志结构
+
+首先使用 Python 正则表达式对 error.log 进行解析，提取以下关键字段：
+
+- 时间戳
+- 客户端 IP 与端口
+- 被访问的脚本路径
+
+解析后的数据被统一存入 Pandas DataFrame 中，为后续处理提供基础。
+
+```python
+import re
+import pandas as pd
+from datetime import datetime
+
+log_pattern = re.compile(
+    r"\[(?P<time>[^\]]+)\]\s+"
+    r"\[:error\]\s+"
+    r"\[pid\s+(?P<pid>\d+):tid\s+(?P<tid>\d+)\]\s+"
+    r"\[client\s+(?P<ip>[\d\.]+):(?P<port>\d+)\]\s+"
+    r"script\s+'(?P<script>[^']+)'"
+)
+
+def parse_line(line: str):
+    m = log_pattern.search(line)
+    if not m:
+        return None
+    d = m.groupdict()
+    try:
+        time_dt = datetime.strptime(d["time"], "%a %b %d %H:%M:%S.%f %Y")
+    except Exception:
+        time_dt = None
+    return {
+        "time_raw": d["time"],
+        "time_dt": time_dt,
+        "client_ip": d["ip"],
+        "client_port": d["port"],
+        "script": d["script"]
+    }
+```
+
+<img
+  src="/static/images/ai_log_pcapng/parsed_dataframe.png"
+  alt="日志解析后 DataFrame head()"
+  width="700"
+/>
+
+---
+
+### 2. Pandas 清洗操作
+
+在构建 DataFrame 后，主要进行了以下清洗步骤：
+
+- 删除无法解析或字段缺失的日志行
+- 去除重复记录
+- 将时间字段转换为标准 `datetime` 类型
+
+清洗完成后，将结果导出为：
+
+```
+error_cleaned.csv
+```
+
+这一阶段的目标并不是"分析"，而是**让数据变得可靠、可用**。
+
+```python
+# 读取并解析日志
+rows = []
+with open("error.log", "r", encoding="utf-8", errors="ignore") as f:
+    for line in f:
+        r = parse_line(line)
+        if r:
+            rows.append(r)
+
+# 构建DataFrame并清洗
+df = pd.DataFrame(rows)
+df = df.dropna()
+df = df.drop_duplicates()
+
+# 保存清洗结果
+df.to_csv("error_cleaned.csv", index=False)
+```
+
+---
+
+### 3. 基础安全统计
+
+从安全视角出发，对 error.log 进行了基础统计：
+
+- 高频访问的客户端 IP
+- 被频繁请求但不存在的脚本路径
+- 单个 IP 请求路径的多样性
+
+```python
+print("[Top 10 客户端 IP]")
+print(df["client_ip"].value_counts().head(10))
+
+print("\n[Top 10 被请求文件]")
+df["file"] = df["script"].apply(lambda x: x.split("/")[-1])
+print(df["file"].value_counts().head(10))
+```
+
+<img
+  src="/static/images/ai_log_pcapng/statistics_result.png"
+  alt="Top IP / Top 脚本路径统计结果"
+  width="700"
+/>
+
+---
+
+## 四、pcap 流量数据处理流程
+
+### 1. CSV 流量数据加载
+
+Wireshark 导出的 pcapng 文件被转换为 CSV 后，直接使用 Pandas 读取，并统一字段命名：
+
+- 时间（Time）
+- 源地址 / 目的地址
+- 协议类型
+- 数据包长度
+- 协议信息（Info）
+
+```python
+# 读取Wireshark导出的CSV
+pcap_df = pd.read_csv("capture.csv")
+
+# 统一列名（根据实际CSV列名调整）
+pcap_df = pcap_df.rename(columns={
+    "Time": "time",
+    "Source": "src",
+    "Destination": "dst",
+    "Protocol": "protocol",
+    "Length": "length",
+    "Info": "info"
+})
+```
+
+<img
+  src="/static/images/ai_log_pcapng/pcap_dataframe.png"
+  alt="pcap CSV 原始数据预览"
+  width="700"
+/>
+
+---
+
+### 2. 流量数据清洗
+
+针对流量数据，主要进行了以下处理：
+
+- 删除 Protocol / Info 为空的记录
+- 时间与长度字段类型转换
+- 去重，避免重复包干扰统计结果
+
+清洗后的完整流量数据保存为：
+
+```
+pcap_cleaned.csv
+```
+
+```python
+# 清洗pcap数据
+pcap_df = pcap_df.dropna(subset=["protocol", "info"])
+pcap_df = pcap_df.drop_duplicates()
+
+# 时间格式转换
+pcap_df["time"] = pd.to_datetime(pcap_df["time"])
+
+# 保存清洗结果
+pcap_df.to_csv("pcap_cleaned.csv", index=False)
+```
+
+---
+
+## 五、从安全视角分析流量数据
+
+### 1. 协议分布分析
+
+通过统计 `Protocol` 字段，可以清晰看到流量中主要包含：
+
+- TCP
+- HTTP
+- ARP
+
+```python
+print("[协议分布统计]")
+print(pcap_df["protocol"].value_counts())
+```
+
+### 2. ARP 广播行为观察
+
+在流量中发现多次 ARP `Who has` 广播请求，且来源集中在同一主机。
+
+相关数据被单独导出为：
+
+```
+arp_activity.csv
+```
+
+```python
+def arp_analysis(df):
+    arp_df = df[df["protocol"] == "ARP"].copy()
+
+    if arp_df.empty:
+        print("\n[-] 未发现 ARP 流量")
+        return arp_df
+
+    print("\n[+] ARP 行为分析")
+    print(arp_df[["src", "dst", "info"]])
+    print("\n[ARP 源统计]")
+    print(arp_df["src"].value_counts())
+
+    # 保存ARP活动记录
+    arp_df.to_csv("arp_activity.csv", index=False)
+    return arp_df
+
+arp_df = arp_analysis(pcap_df)
+```
+
+### 3. HTTP 请求路径分析
+
+通过解析 HTTP 流量中的 `Info` 字段，提取请求 URL 后发现：
+
+- 存在明确的 Web 目录访问行为
+- 请求路径包含测试与靶场相关目录（如 sqlilabs）
+
+HTTP 请求数据被导出为：
+
+```
+http_requests.csv
+```
+
+```python
+def http_analysis(df):
+    http_df = df[df["protocol"] == "HTTP"].copy()
+
+    if http_df.empty:
+        print("\n[-] 未发现 HTTP 流量")
+        return http_df
+
+    # 提取HTTP请求路径
+    def extract_path(info):
+        if "GET" in info:
+            # 从GET请求中提取路径
+            match = re.search(r'GET (.+?) HTTP', info)
+            if match:
+                return match.group(1)
+        elif "POST" in info:
+            # 从POST请求中提取路径
+            match = re.search(r'POST (.+?) HTTP', info)
+            if match:
+                return match.group(1)
+        return None
+
+    http_df["path"] = http_df["info"].apply(extract_path)
+    http_df = http_df.dropna(subset=["path"])
+
+    print("\n[+] HTTP 请求统计")
+    print("HTTP请求总数:", len(http_df))
+    print("\n[Top 10 HTTP 请求路径]")
+    print(http_df["path"].value_counts().head(10))
+
+    # 保存HTTP请求记录
+    http_df.to_csv("http_requests.csv", index=False)
+    return http_df
+
+http_df = http_analysis(pcap_df)
+```
+
+<img
+  src="/static/images/ai_log_pcapng/http_url_statistics.png"
+  alt="HTTP URL 统计结果"
+  width="700"
+/>
+
+---
+
+### 4. TCP SYN 行为分析
+
+通过筛选包含 `SYN` 标志的 TCP 报文，可以观察到：
+
+- 单一源 IP 发起多次连接请求
+- 存在明显的探测特征
+
+```python
+def tcp_syn_analysis(df):
+    # 筛选TCP协议包
+    tcp_df = df[df["protocol"] == "TCP"].copy()
+
+    # 查找包含SYN标志的包
+    syn_df = tcp_df[tcp_df["info"].str.contains("SYN", case=False, na=False)].copy()
+
+    if syn_df.empty:
+        print("\n[-] 未发现 TCP SYN 流量")
+        return syn_df
+
+    print("\n[+] TCP SYN 行为分析")
+    print("TCP SYN包总数:", len(syn_df))
+    print("\n[Top 10 SYN 源IP]")
+    print(syn_df["src"].value_counts().head(10))
+
+    # 分析异常SYN行为（同一IP大量SYN请求）
+    suspicious_syn = []
+    for ip, count in syn_df["src"].value_counts().items():
+        if count > 10:  # 阈值：同一IP发送超过10个SYN包
+            suspicious_syn.append((ip, count))
+
+    if suspicious_syn:
+        print("\n⚠️  可疑TCP SYN行为：")
+        for ip, count in suspicious_syn:
+            print(f"  - IP {ip} 发送了 {count} 个SYN包")
+
+    # 保存SYN活动记录
+    syn_df.to_csv("tcp_syn_activity.csv", index=False)
+    return syn_df
+
+syn_df = tcp_syn_analysis(pcap_df)
+```
+
+<img src="/static/images/ai_log_pcapng/tcp_syn_statistics.png" alt="TCP SYN 行为统计" width="700" />
+
+---
+
+## 六、实践总结
+
+通过本次实践，我完成了：
+
+- 使用 Python + Pandas 清洗真实 Web 日志与网络流量
+- 将非结构化安全数据转化为可分析的 CSV
+- 从安全视角完成基础统计与行为分析
+- 构建了可复现、可扩展的数据处理流程
+
+这一步并不是为了"做模型"，而是为后续 **AI 安全分析** 提供高质量数据基础。
+
+---
+
+## 七、下一步：AI 安全方向的延展
+
+在完成数据清洗后，后续可以进一步尝试：
+
+- 对日志与流量特征进行向量化
+- 使用聚类方法发现异常访问模式
+- 将安全数据作为 AI 模型的输入进行自动化分析
+
+**安全数据处理能力，是 AI 安全真正落地的起点。**
+
+---
+
+> 本文为安全数据处理阶段性实践记录，所有流程均可在本地环境复现。
