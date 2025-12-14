@@ -102,11 +102,6 @@ def parse_line(line: str):
     }
 ```
 
-<img
-  src="/static/images/ai_log_pcapng/parsed_dataframe.png"
-  alt="日志解析后 DataFrame head()"
-  width="700"
-/>
 
 ---
 
@@ -378,8 +373,6 @@ def tcp_syn_analysis(df):
 
 syn_df = tcp_syn_analysis(pcap_df)
 ```
-
-<img src="/static/images/ai_log_pcapng/tcp_syn_statistics.png" alt="TCP SYN 行为统计" width="700" />
 
 ---
 
