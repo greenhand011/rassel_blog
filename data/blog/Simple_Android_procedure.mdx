@@ -1,0 +1,381 @@
+---
+title: 'Android-studio-2025.2.2.7编写简易Android程序'
+date: '2025-12-17'
+tags: ['逆向', 'Android']
+draft: false
+summary: '本文详细记录了使用Android Studio 2025.2.2.7版本创建一个包含注册页面和详情显示页面的简易Android应用程序的全过程。'
+---
+
+## 第一步：环境准备与项目创建
+
+1. 打开Android Studio 2025.2.2.7
+2. 选择"New Project"创建新项目
+3. 选择"Empty Views Activity"模板
+4. 配置项目名称、包名和保存路径
+
+**重要提醒**：项目保存路径中**不能包含中文**，否则会导致编译失败。
+就像下图一样
+
+<img src="/static/images/Simple_Android_procedure/error1.png" alt="error 错误显示" width="700" />
+点击这个小象按钮
+<img src="/static/images/Simple_Android_procedure/finderror.png" alt="小象按钮" width="700" />
+出现如下错误信息
+<img src="/static/images/Simple_Android_procedure/error_info.png" alt="错误信息" width="700" />
+把所有路径改为应为即可
+<img src="/static/images/Simple_Android_procedure/fixerror.png" alt="修复完成" width="700" />
+
+## 第二步：编写注册页面布局
+
+注册页面需要包含以下字段：
+
+- 姓名
+- 年龄
+- 生日
+- 邮箱
+- 兴趣爱好
+
+### activity_main.xml 完整代码
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="20dp"
+    android:gravity="center_horizontal">
+
+    <!-- 标题 -->
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="新用户注册"
+        android:textSize="24sp"
+        android:textStyle="bold"
+        android:layout_marginBottom="30dp"/>
+
+    <!-- 姓名输入框 -->
+    <EditText
+        android:id="@+id/etName"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="请输入姓名"/>
+
+    <!-- 年龄输入框 (限制只能输数字) -->
+    <EditText
+        android:id="@+id/etAge"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:inputType="number"
+        android:hint="请输入年龄"/>
+
+    <!-- 生日输入框 -->
+    <EditText
+        android:id="@+id/etBirthday"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:inputType="date"
+        android:hint="请输入生日 (如: 2000-01-01)"/>
+
+    <!-- 邮箱输入框 -->
+    <EditText
+        android:id="@+id/etEmail"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:inputType="textEmailAddress"
+        android:hint="请输入电子邮箱"/>
+
+    <!-- 兴趣爱好输入框 -->
+    <EditText
+        android:id="@+id/etHobby"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="请输入兴趣爱好"/>
+
+    <!-- 注册按钮 -->
+    <Button
+        android:id="@+id/btnRegister"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="立即注册"
+        android:layout_marginTop="30dp"/>
+
+</LinearLayout>
+```
+
+### 界面效果预览
+
+<img src="/static/images/Simple_Android_procedure/loginpage.png" alt="登录界面" width="700" />
+
+## 第三步：创建详情显示页面
+
+1.在左侧项目栏，找到你的代码文件夹：app -> src -> main -> java -> com.example.userregisterapp。2.在 com.example.userregisterapp 上点击 鼠标右键。3.选择 New -> Activity -> Empty Views Activity。4.在弹出的窗口中：
+Activity Name: 输入 ResultActivity
+Layout Name: 会自动变成 activity_result
+5,点击 Finish。
+
+<img src="/static/images/Simple_Android_procedure/activity.png" alt="选项界面" width="700" />
+
+## 第四步：编写详情页面布局
+
+### activity_result.xml 完整代码
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="20dp">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="注册信息详情"
+        android:textSize="24sp"
+        android:textStyle="bold"
+        android:layout_marginBottom="20dp"/>
+
+    <!-- 用来显示所有信息的文本区域 -->
+    <TextView
+        android:id="@+id/tvUserInfo"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textSize="18sp"
+        android:lineSpacingExtra="8dp"
+        android:text="这里将显示信息..."/>
+
+</LinearLayout>
+```
+
+## 第五步：编写业务逻辑代码
+
+### 1. MainActivity.kt (注册页面逻辑)
+
+```kotlin
+import android.content.Intent
+import android.os.Bundle
+import android.widget.Button
+import android.widget.EditText
+import android.widget.Toast
+import androidx.appcompat.app.AppCompatActivity
+
+class MainActivity : AppCompatActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_main)
+
+        // 1. 找到界面上的控件
+        val etName = findViewById<EditText>(R.id.etName)
+        val etAge = findViewById<EditText>(R.id.etAge)
+        val etBirthday = findViewById<EditText>(R.id.etBirthday)
+        val etEmail = findViewById<EditText>(R.id.etEmail)
+        val etHobby = findViewById<EditText>(R.id.etHobby)
+        val btnRegister = findViewById<Button>(R.id.btnRegister)
+
+        // 2. 设置按钮点击事件
+        btnRegister.setOnClickListener {
+            val name = etName.text.toString()
+            val age = etAge.text.toString()
+            val birthday = etBirthday.text.toString()
+            val email = etEmail.text.toString()
+            val hobby = etHobby.text.toString()
+
+            if (name.isEmpty() || age.isEmpty()) {
+                Toast.makeText(this, "请至少填写姓名和年龄", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+
+            // 3. 跳转到 ResultActivity
+            val intent = Intent(this, ResultActivity::class.java)
+
+            // 4. 传值
+            intent.putExtra("USER_NAME", name)
+            intent.putExtra("USER_AGE", age)
+            intent.putExtra("USER_BIRTHDAY", birthday)
+            intent.putExtra("USER_EMAIL", email)
+            intent.putExtra("USER_HOBBY", hobby)
+
+            startActivity(intent)
+        }
+    }
+}
+```
+
+**MainActivity主要功能：**
+
+1. 查找界面控件
+2. 设置按钮点击监听
+3. 验证输入数据
+4. 使用Intent传递数据
+5. 启动新页面
+
+### 2. ResultActivity.kt (详情页面逻辑)
+
+需要先创建ResultActivity类文件：
+
+1. 在`java/你的包名`文件夹右键
+2. 选择`New → Kotlin Class/File`
+3. 输入名称`ResultActivity`
+4. 选择`Class`类型
+
+```kotlin
+import android.os.Bundle
+import android.widget.TextView
+import androidx.appcompat.app.AppCompatActivity
+
+class ResultActivity : AppCompatActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_result)
+
+        val tvUserInfo = findViewById<TextView>(R.id.tvUserInfo)
+
+        val name = intent.getStringExtra("USER_NAME")
+        val age = intent.getStringExtra("USER_AGE")
+        val birthday = intent.getStringExtra("USER_BIRTHDAY")
+        val email = intent.getStringExtra("USER_EMAIL")
+        val hobby = intent.getStringExtra("USER_HOBBY")
+
+        val info = """
+            姓名: $name
+            年龄: $age 岁
+            生日: $birthday
+            邮箱: $email
+            兴趣爱好: $hobby
+        """.trimIndent()
+
+        tvUserInfo.text = info
+    }
+}
+```
+
+### 3. 修改AndroidManifest.xml
+
+确保ResultActivity在清单文件中注册：
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.example.yourapp">
+
+    <application
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:theme="@style/Theme.AppCompat.Light.NoActionBar">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".ResultActivity"
+            android:exported="false" />
+
+    </application>
+
+</manifest>
+```
+
+## 第六步：运行程序
+
+### 运行步骤
+
+1. 连接Android设备或启动模拟器
+2. 点击工具栏上的绿色运行按钮 ▶️
+3. 等待应用安装和启动
+
+### 运行效果展示
+
+<!-- 并排显示运行效果的两个截图 -->
+
+![注册页面运行效果](placeholder4.png) ![详情页面运行效果](placeholder5.png)
+
+<img src="/static/images/Simple_Android_procedure/page1.png" alt="选项界面" width="350" />
+<img src="/static/images/Simple_Android_procedure/page2.png" alt="选项界面" width="350" />
+
+## 常见问题与解决方案
+
+### 问题1：路径包含中文导致编译失败
+
+**错误信息示例**：
+
+```
+Error: The project path contains non-ASCII characters.
+```
+
+**解决方案**：将项目移动到全英文路径下
+
+### 问题2：无法找到ResultActivity类
+
+**错误信息**：
+
+```
+Class referenced in the manifest does not exist.
+```
+
+**解决方案**：
+
+1. 检查ResultActivity.kt文件是否创建在正确包名下
+2. 检查AndroidManifest.xml中的activity声明
+
+### 问题3：页面跳转失败
+
+**解决方案**：
+
+1. 检查Intent构造是否正确
+2. 确保ResultActivity已在清单文件中注册
+3. 检查传递的Extra键名是否一致
+
+## 逆向分析要点
+
+从逆向工程角度，本程序值得注意的地方：
+
+### 1. Intent数据传输
+
+- 数据通过`putExtra()`方法传递
+- 使用键值对形式存储
+- 数据以明文形式传递，存在安全风险
+
+### 2. 组件暴露情况
+
+- MainActivity设置为`exported="true"`，可被外部调用
+- ResultActivity设置为`exported="false"`，仅限内部使用
+
+### 3. 数据传输格式
+
+```kotlin
+// 数据传递格式
+USER_NAME: String
+USER_AGE: String
+USER_BIRTHDAY: String
+USER_EMAIL: String
+USER_HOBBY: String
+```
+
+## 扩展练习
+
+1. **数据验证增强**：为邮箱字段添加正则表达式验证
+2. **数据持久化**：使用SharedPreferences保存用户信息
+3. **界面美化**：添加Material Design组件和主题
+4. **数据加密**：对传递的数据进行加密处理
+5. **添加返回按钮**：在详情页面添加返回功能
+
+## 总结
+
+通过这个简易的Android程序，我们学习了：
+
+- Android Studio的基本使用
+- Activity的创建和跳转
+- Intent数据传递
+- 基本的UI布局设计
+- Kotlin基础语法
+- Android应用的基本架构
+
+这个程序虽然简单，但包含了Android开发的核心概念，为进一步学习打下了坚实基础。
