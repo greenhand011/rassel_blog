@@ -378,10 +378,19 @@ decision_threshold=0.5):
 - 结构：辅助信号
 
 <img src="/static/images/detect_webshell/result1.png" alt="初步判断结果" width="700" />
-可以发现结果并不是特别精准，接下来就是调整规则 ### 7.3 融合判定函数 重新定义“强 / 弱特征”
-强攻击特征（单独即可判） \```python STRONG_EXEC = [     'eval', 'system', 'assert',    
-'shell_exec', 'passthru',     'base64_decode', 'gzinflate' ] 弱可疑特征（必须组合）
 
+可以发现结果并不是特别精准，接下来就是调整规则
+
+### 7.3 融合判定函数 重新定义“强 / 弱特征”
+
+强攻击特征（单独即可判）
+\```python
+STRONG_EXEC = [     'eval', 'system', 'assert',    
+'shell_exec', 'passthru',     'base64_decode', 'gzinflate' ]
+\```
+
+弱可疑特征（必须组合）
+\```python
 WEAK_INPUT = [
     '$_post', '$_get', '$_request'
 ]
@@ -389,6 +398,7 @@ WEAK_INPUT = [
 WEAK_STRUCT = [
     '); ?>'
 ]
+\```
 \```python
 def semantic_detect(code):
     code = code.lower()
@@ -428,7 +438,7 @@ entropy_threshold=4.5):
 
 \```
 
-## <img src="/static/images/detect_webshell/result.png" alt="最终结果" width="700" />
+<img src="/static/images/detect_webshell/result.png" alt="最终结果" width="700" />
 
 ## 总结
 
