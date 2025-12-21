@@ -1,8 +1,9 @@
 ---
 title: '如何识别 WebShell 或 SQL 注入？从信息熵到多特征融合的实战实验'
-date: '2025-XX-XX'
+date: '2025-12-21'
 tags: ['Web安全', 'AI安全']
-description: '从零实现基于信息熵 + 字符 N-gram + 规则融合的 WebShell 检测实验，完整代码与实验分析。'
+draft: false
+summary: '从零实现基于信息熵 + 字符 N-gram + 规则融合的 WebShell 检测实验，完整代码与实验分析。'
 ---
 
 ## 前言
