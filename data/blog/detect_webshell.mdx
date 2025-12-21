@@ -1,0 +1,441 @@
+---
+title: '如何识别 WebShell 或 SQL 注入？从信息熵到多特征融合的实战实验'
+date: '2025-XX-XX'
+tags: ['Web安全', 'AI安全']
+description: '从零实现基于信息熵 + 字符 N-gram + 规则融合的 WebShell 检测实验，完整代码与实验分析。'
+---
+
+## 前言
+
+在真实的 Web 安全对抗中，**WebShell 往往并不是"明显恶意"的代码**。  
+它们通常具备以下特点：
+
+- 高度混淆（Base64 / gzip / 字符拼接）
+- 字符分布异常
+- 语义上包含危险执行逻辑（`eval` / `system` / `assert`）
+- 结构上"短小、直接、功能单一"
+
+本文不会一上来就使用机器学习模型，而是**从安全工程最基础、最可靠的角度出发**：
+
+> 👉 用数据验证，用规则解释，用融合降低误报。
+
+我们将完整走完以下路径：
+
+1. 信息熵检测（混淆程度）
+2. 阈值实验（Rule-based）
+3. 字符 N-gram + TF-IDF（语义特征）
+4. 多特征融合（工程级检测逻辑）
+
+---
+
+## 0. 实验环境准备
+
+### 0.1 Python 环境
+
+确保你能运行：
+
+\```bash
+python --version
+\```
+
+推荐版本：Python ≥ 3.9
+
+### 0.2 安装最小依赖
+
+\```bash
+pip install numpy pandas matplotlib scikit-learn
+\```
+
+---
+
+## 1. 实验数据准备
+
+### 1.1 目录结构
+
+\```text
+entropy_webshell_exp/
+├── data/
+│ ├── benign.txt
+│ └── webshell.txt
+└── entropy_test.py
+\```
+
+### 1.2 正常 PHP 样本（benign.txt）
+
+每一行是一段可读、低混淆的 PHP 代码：
+
+\```php
+
+<?php echo "Hello World"; ?>
+
+<?php $a = 1 + 2; echo $a; ?>
+
+<?php include 'config.php'; ?>
+
+<?php if ($user == 'admin') { echo 'ok'; } ?>
+
+\```
+
+**📌 规则：**
+
+- 不做混淆
+- 不包含动态执行函数
+- 符合正常业务逻辑
+
+### 1.3 WebShell 样本（webshell.txt）
+
+\```php
+
+<?php eval(base64_decode("cGhwaW5mbygpOw==")); ?>
+
+<?php @assert($_POST['x']); ?>
+
+<?php $a="ZXZhbCgkX1BPU1RbJ3gnXSk7";eval(base64_decode($a)); ?>
+
+<?php preg_replace("/.*/e", $_POST['cmd'], ""); ?>
+
+\```
+
+这些样本覆盖了常见后门形式：
+
+- Base64 + eval
+- assert 后门
+- 变量拼接执行
+- preg_replace /e 代码执行
+
+---
+
+## 2. 手写 Shannon 信息熵函数
+
+### 2.1 为什么信息熵？
+
+**直觉解释：**
+
+- 正常代码：字符分布不均匀
+- 混淆代码：字符分布趋向均匀
+
+这正是 Shannon Entropy 能捕捉的信号。
+
+<img src="/static/images/detect_webshell/shannon.png" alt="香农熵公式" width="700" />
+
+### 2.2 熵函数实现
+
+\```python
+import math
+
+def shannon_entropy(s: str) -> float:
+if not s:
+return 0.0
+
+    length = len(s)
+    entropy = 0.0
+
+    for c in set(s):
+        p = s.count(c) / length
+        entropy -= p * math.log2(p)
+
+    return entropy
+
+\```
+
+### 2.3 快速 sanity check
+
+\```python
+test_strings = [
+"aaaaaa",
+"abcdef",
+"hello world",
+"cGhwaW5mbygpOw=="
+]
+
+for s in test_strings:
+print(s, "->", shannon_entropy(s))
+\```
+
+<img src="/static/images/detect_webshell/diff_entropy.png" alt="快速代码熵" width="700" />
+
+---
+
+## 3. WebShell vs 正常代码的真实熵分布
+
+### 3.1 读取数据
+
+\```python
+def load_lines(path):
+with open(path, encoding="utf-8") as f:
+return [line.strip() for line in f if line.strip()]
+
+benign_codes = load_lines("data/benign.txt")
+webshell_codes = load_lines("data/webshell.txt")
+\```
+
+### 3.2 计算每条代码的信息熵
+
+\```python
+benign_entropy = [shannon_entropy(c) for c in benign_codes]
+webshell_entropy = [shannon_entropy(c) for c in webshell_codes]
+
+print("正常代码熵:", benign_entropy)
+print("WebShell 熵:", webshell_entropy)
+\```
+
+<img src="/static/images/detect_webshell/diff_benign_shell.png" alt="香农熵对比" width="700" />
+已经实际跑出了：
+
+\```text
+Benign Mean Entropy: 3.97
+WebShell Mean Entropy: 4.81
+\```
+
+**📌 结论 1（重要）：**
+
+WebShell 的平均信息熵显著高于正常代码，且分布更集中。
+
+---
+
+## 4. 信息熵分布可视化
+
+\```python
+import matplotlib.pyplot as plt
+
+plt.hist(benign_entropy, bins=10, alpha=0.7, label="Benign")
+plt.hist(webshell_entropy, bins=10, alpha=0.7, label="WebShell")
+plt.legend()
+plt.xlabel("Entropy")
+plt.ylabel("Count")
+plt.title("Entropy Distribution")
+plt.grid(True)
+plt.show()
+\```
+
+<img src="/static/images/detect_webshell/histogram.png" alt="直方图" width="700" />
+
+---
+
+## 5. 基于信息熵的阈值检测实验
+
+### 5.1 检测函数
+
+\```python
+def entropy_detect(code, threshold):
+return shannon_entropy(code) >= threshold
+\```
+
+### 5.2 阈值评估
+
+\```python
+def evaluate_threshold(threshold, benign_codes, webshell_codes):
+benign_fp = 0
+webshell_tp = 0
+
+    for c in benign_codes:
+        if entropy_detect(c, threshold):
+            benign_fp += 1
+
+    for c in webshell_codes:
+        if entropy_detect(c, threshold):
+            webshell_tp += 1
+
+    return benign_fp, webshell_tp
+
+thresholds = [4.0, 4.5, 4.8]
+
+for t in thresholds:
+fp, tp = evaluate_threshold(t, benign_codes, webshell_codes)
+print(t, fp, tp)
+\```
+
+你跑出的真实结果是：
+
+\```text
+Threshold=4.5
+正常代码误报: 0/4
+WebShell 命中: 4/4
+\```
+
+<img src="/static/images/detect_webshell/threshold.png" alt="实验结果" width="700" />
+**📌 结论 2：**
+
+信息熵是一个"强信号"，但它无法解释"为什么"。
+
+---
+
+## 6. 字符 N-gram + TF-IDF（语义特征）
+
+### 6.1 为什么不用词级？
+
+WebShell 样本中大量存在：
+
+\```php
+eval(base64_decode("..."))
+\```
+
+👉 字符级 N-gram 才能捕捉这种模式
+
+### 6.2 构造 TF-IDF
+
+\```python
+from sklearn.feature_extraction.text import TfidfVectorizer
+import numpy as np
+
+vectorizer = TfidfVectorizer(
+analyzer="char",
+ngram_range=(3, 6)
+)
+
+X = benign_codes + webshell_codes
+X_tfidf = vectorizer.fit_transform(X)
+\```
+
+### 6.3 高风险 N-gram 分析
+
+\```python
+feature_names = vectorizer.get_feature_names_out()
+
+# 分割正常和WebShell的特征矩阵
+
+X_benign = X_tfidf[:len(benign_codes)]
+X_webshell = X_tfidf[len(benign_codes):]
+
+# 计算平均特征向量
+
+benign_mean = np.mean(X_benign.toarray(), axis=0)
+webshell_mean = np.mean(X_webshell.toarray(), axis=0)
+
+# 计算差异
+
+diff = webshell_mean - benign_mean
+
+# 找出差异最大的特征
+
+top_idx = np.argsort(diff)[-20:]
+
+print("\n最偏向 WebShell 的 N-gram：")
+for i in reversed(top_idx):
+print(feature_names[i], "→", round(diff[i], 4))
+\```
+
+你观察到的高风险特征包括：
+
+\```text
+$\_post eval system ); ?>
+\```
+
+<img src="/static/images/detect_webshell/ngram.png" alt="直方图" width="700" />
+**📌 结论 3：**
+
+TF-IDF 捕捉的是"攻击语义"，而不是混淆程度。
+
+---
+
+## 7. 多特征融合（工程级检测）
+
+### 7.1 三类证据回顾
+
+| 特征     | 作用             |
+| -------- | ---------------- |
+| 信息熵   | 判断是否混淆     |
+| TF-IDF   | 判断是否攻击语义 |
+| 结构特征 | 判断是否异常执行 |
+
+### 7.2 融合判定函数
+
+\```python
+def tfidf_detect(code): # 使用训练好的 vectorizer 和分类器 # 这里简化，实际应用中需要训练一个分类器
+features = vectorizer.transform([code]) # 这里假设我们有一个分类器 clf # return clf.predict(features)[0] == 1 # 为了演示，我们使用简单的规则：如果包含高危特征
+high_risk_ngrams = ['eval', 'system', 'assert', '$_POST', '$_GET']
+for ngram in high_risk_ngrams:
+if ngram in code:
+return True
+return False
+
+def fusion_detect(code,
+entropy_threshold=4.5,
+w_entropy=0.4,
+w_tfidf=0.4,
+w_structure=0.2,
+decision_threshold=0.5):
+
+    entropy_hit = entropy_detect(code, entropy_threshold)
+    tfidf_hit = tfidf_detect(code)
+    structure_hit = '); ?>' in code
+
+    score = (
+        w_entropy * int(entropy_hit) +
+        w_tfidf * int(tfidf_hit) +
+        w_structure * int(structure_hit)
+    )
+
+    return score >= decision_threshold
+
+\```
+
+**📌 为什么这样配权重？**
+
+- 熵：强但泛化
+- TF-IDF：精准但依赖规则
+- 结构：辅助信号
+
+<img src="/static/images/detect_webshell/result1.png" alt="初步判断结果" width="700" />
+可以发现结果并不是特别精准，接下来就是调整规则 ### 7.3 融合判定函数 重新定义“强 / 弱特征”
+强攻击特征（单独即可判） \```python STRONG_EXEC = [     'eval', 'system', 'assert',    
+'shell_exec', 'passthru',     'base64_decode', 'gzinflate' ] 弱可疑特征（必须组合）
+
+WEAK_INPUT = [
+    '$_post', '$_get', '$_request'
+]
+
+WEAK_STRUCT = [
+    '); ?>'
+]
+\```python
+def semantic_detect(code):
+    code = code.lower()
+
+    # 强特征：直接返回 True
+    for kw in STRONG_EXEC:
+        if kw in code:
+            return "strong"
+
+    weak_hits = 0
+    for kw in WEAK_INPUT:
+        if kw in code:
+            weak_hits += 1
+    for kw in WEAK_STRUCT:
+        if kw in code:
+            weak_hits += 1
+
+    return "weak" if weak_hits >= 2 else "none"
+\```
+重写融合判定逻辑
+\```python
+def fusion_detect_v2(code,
+entropy_threshold=4.5):
+
+    entropy_hit = entropy_detect(code, entropy_threshold)
+    semantic_level = semantic_detect(code)
+
+    # 规则 1：强语义命中
+    if semantic_level == "strong":
+        return True, "Strong semantic hit"
+
+    # 规则 2：熵 + 弱语义组合
+    if entropy_hit and semantic_level == "weak":
+        return True, "Entropy + weak semantic"
+
+    return False, "Benign"
+
+\```
+
+<img src="/static/images/detect_webshell/result.png" alt="最终结果" width="700" />
+---
+
+## 总结
+
+这不是一个"模型 Demo"，而是一个安全工程真实可落地的检测思路：
+
+- 用熵发现异常
+- 用语义解释异常
+- 用融合降低误报
+
+真正的安全检测，从来不是单一特征。
