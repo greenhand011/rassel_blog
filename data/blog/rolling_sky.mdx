@@ -1,0 +1,172 @@
+---
+title: 'Android 逆向实战：基于 Smali 代码注入的《滚动的天空》内购逻辑分析'
+date: '2025-12-22'
+tags: ['Android Reverse']
+draft: false
+summary: '深入 Android Dalvik 字节码层面，记录一次通过 AndroidKiller 修改 Smali 逻辑实现去除内购限制的实战过程，包含对匿名内部类、寄存器操作及编译错误的深度解析。'
+---
+
+> ⚠️ **免责声明**：本文仅供网络安全学习与技术研究交流，旨在揭示客户端校验的安全风险。请勿用于非法用途，请支持正版软件。
+
+## 一、逆向工程背景
+
+在 Android 应用安全测试中，**Smali 插桩**与**逻辑篡改**是常见的攻击手段。许多单机游戏或缺乏服务端校验的应用，往往将支付成功的判断逻辑写死在客户端回调中。
+
+本次实验对象为《滚动的天空》（Rolling Sky），我们将利用 **AndroidKiller** 反编译 APK，定位其支付接口的回调函数，并通过修改 Dalvik 字节码（Smali）将“支付失败”的逻辑替换为“支付成功”，从而实现绕过内购限制。
+
+---
+
+## 二、静态分析与定位关键切入点
+
+### 2.1 反编译与资源搜索
+
+首先将 APK 拖入 AndroidKiller 进行反编译。反编译完成后，我们需要找到支付逻辑的入口。通常，UI 界面上的提示语是最好的突破口。
+
+我们搜索“支付失败”对应的 Unicode 编码 `\u652f\u4ed8\u5931\u8d25`。
+
+<img src="/static/images/rolling_sky/open.png" alt="在Androidkiller打开界面" width="600" />
+
+<img src="/static/images/rolling_sky/payfault.png" alt="找到有支付失败的文件位置" width="600" />
+
+### 2.2 筛选关键类文件
+
+搜索结果返回了三条记录，我们需要具备一定的代码嗅觉来筛选：
+
+1.  `com.nearme...`：这是 OPPO 平台的通用 SDK 代码，修改它可能导致全局崩溃或无效，通常作为底层库存在。
+2.  `com.turbochilli.rollingsky.pay.oppPay$2$1.smali`：**这是我们要关注的核心。**
+
+**🔍 技术分析：为什么是这个文件？**
+
+- **包名匹配**：`com.turbochilli.rollingsky` 是游戏的主包名，代表这是游戏自身的业务逻辑。
+- **类名分析**：`oppPay` 显然是 OPPO 支付的封装类。
+- **匿名内部类 (`$2$1`)**：文件名中的 `$` 符号在 Java 编译后表示内部类。`$2$1` 意味着这是 `oppPay` 类中第 2 个匿名内部类里的第 1 个匿名内部类。
+  - 在 Android 开发中，支付回调通常是以 `Listener` 或 `Callback` 的形式传入的，这种层层嵌套的结构（Callback 里的 Callback）非常符合支付回调的特征。
+
+点进文件，我们看到这是游戏调用支付 SDK 时传入的监听器实现。
+
+---
+
+## 三、Smali 逻辑分析与代码注入
+
+### 3.1 寻找回调方法
+
+进入 `oppPay$2$1.smali`，我们重点关注两个回调方法，它们决定了支付结果的处理流程：
+
+<img src="/static/images/rolling_sky/logical.png" alt="找到有支付失败的代码" width="600" />
+
+上图显示了支付失败（Failure）和取消（Cancel）的处理逻辑。而下图则是我们梦寐以求的“成功逻辑”：
+
+<img src="/static/images/rolling_sky/success.png" alt="找到有支付成功的代码" width="600" />
+
+### 3.2 深入 onSuccess 方法
+
+找到 `.method public onSuccess(Ljava/lang/String;)V`。
+这段代码的语义是：**只要执行流到达这里，游戏客户端就认为用户已付款，并触发发货逻辑（如解锁关卡、增加钻石）。**
+
+我们需要复制该方法内的核心业务逻辑：
+
+```smali
+.line 101
+const-string v0, "lx"
+
+# 构造日志信息 "onSuccess--->支付成功..."
+new-instance v1, Ljava/lang/StringBuilder;
+invoke-direct {v1}, Ljava/lang/StringBuilder;-><init>()V
+const-string v2, "onSuccess--->\u652f\u4ed8\u6210\u529f---resultMsg:"
+invoke-virtual {v1, v2}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+move-result-object v1
+invoke-virtual {v1, p1}, Ljava/lang/StringBuilder;->append(Ljava/lang/String;)Ljava/lang/StringBuilder;
+move-result-object v1
+invoke-virtual {v1}, Ljava/lang/StringBuilder;->toString()Ljava/lang/String;
+move-result-object v1
+invoke-static {v0, v1}, Landroid/util/Log;->d(Ljava/lang/String;Ljava/lang/String;)I
+
+.line 103
+# 核心发货逻辑开始
+iget-object v0, p0, Lcom/turbochilli/rollingsky/pay/OppPay$2$1;->this$1:Lcom/turbochilli/rollingsky/pay/OppPay$2;
+iget-object v0, v0, Lcom/turbochilli/rollingsky/pay/OppPay$2;->val$mPayCallback:Lcom/turbochilli/rollingsky/pay/PayCallback;
+
+if-eqz v0, :cond_0
+
+.line 104
+# 调用游戏管理器增加资源
+invoke-static {}, Lcom/turbochilli/rollingsky/c;->a()Lcom/turbochilli/rollingsky/c;
+move-result-object v0
+invoke-virtual {v0}, Lcom/turbochilli/rollingsky/c;->h()Lcom/turbochilli/rollingsky/c$b;
+move-result-object v0
+iget-object v1, p0, Lcom/turbochilli/rollingsky/pay/OppPay$2$1;->this$1:Lcom/turbochilli/rollingsky/pay/OppPay$2;
+iget-object v1, v1, Lcom/turbochilli/rollingsky/pay/OppPay$2;->val$orderId:Ljava/lang/String;
+invoke-interface {v0, v1}, Lcom/turbochilli/rollingsky/c$b;->b(Ljava/lang/String;)V
+
+# 回调通知 UI 更新
+.line 105
+iget-object v0, p0, Lcom/turbochilli/rollingsky/pay/OppPay$2$1;->this$1:Lcom/turbochilli/rollingsky/pay/OppPay$2;
+iget-object v0, v0, Lcom/turbochilli/rollingsky/pay/OppPay$2;->val$mPayCallback:Lcom/turbochilli/rollingsky/pay/PayCallback;
+iget-object v1, p0, Lcom/turbochilli/rollingsky/pay/OppPay$2$1;->this$1:Lcom/turbochilli/rollingsky/pay/OppPay$2;
+iget-object v1, v1, Lcom/turbochilli/rollingsky/pay/OppPay$2;->val$iProduct:Lcom/turbochilli/rollingsky/pay/IProduct;
+const/16 v2, 0xc
+invoke-interface {v0, v1, v2}, Lcom/turbochilli/rollingsky/pay/PayCallback;->onSendOrderInfo(Lcom/turbochilli/rollingsky/pay/IProduct;I)V
+
+.line 107
+:cond_0
+return-void
+```
+
+### 3.3 狸猫换太子：篡改 onFailure
+
+找到 `.method public onFailure(Ljava/lang/String;I)V`。
+这是处理支付失败的地方。我们的操作非常简单粗暴：**删除原有的失败处理代码，将 `onSuccess` 的成功代码粘贴进去。**
+
+<img src="/static/images/rolling_sky/finish.png" alt="粘贴成功" width="600" />
+
+> **🛠️ 寄存器（Registers）的关键修正**
+>
+> 在 Smali 中，`.locals` 指令声明了方法中使用的非参数寄存器数量。
+>
+> - 我们复制过来的代码使用了 `v0`, `v1`, `v2` 三个局部寄存器。
+> - 因此，必须确保 `onFailure` 方法开头的 `.locals` 声明大于或等于 3。
+> - 原代码中 `.locals 4` 满足要求，无需修改。如果原值为 1 或 2，必须手动改为 3 或 4，否则运行时会崩溃。
+
+---
+
+## 四、回编译与排错
+
+修改完成后，Ctrl + S 保存。点击 AndroidKiller 顶部的“编译”按钮。
+
+<img src="/static/images/rolling_sky/compile.png" alt="编译" width="600" />
+
+### 4.1 遇到的编译报错
+
+在第一次编译时，遇到了如下错误：
+
+<img src="/static/images/rolling_sky/error.png" alt="编译报错" width="600" />
+
+编译器提示语法解析失败。双击报错信息定位到代码：
+
+<img src="/static/images/rolling_sky/finderror.png" alt="错误位置" width="600" />
+
+**错误原因分析**：
+Smali/Baksmali 对代码格式要求非常严格。直接粘贴代码时，可能引入了**非标准的空格或缩进**（特别是从 IDE 复制代码到文本编辑器时，Tab 键可能被转为空格，或者行首丢失了必要的缩进）。
+
+**解决方法**：
+重新复制完整代码块，并严格对齐缩进。确保指令与参数之间只有标准的空格分隔。
+
+### 4.2 最终结果
+
+修正格式后，再次编译，构建成功。
+
+<img src="/static/images/rolling_sky/result.png" alt="成功结果" width="600" />
+
+安装重签名后的 APK，进入游戏点击购买，无论实际支付是否成功，客户端都会执行我们注入的 `onSuccess` 逻辑，直接发货。
+
+---
+
+## 五、总结与安全启示
+
+通过本次实验，我们验证了客户端校验逻辑的脆弱性。
+
+1.  **攻击成本低**：只需定位到关键的 `onSuccess` 回调，甚至不需要理解具体的加密或网络协议，即可通过代码替换绕过支付。
+2.  **防御建议**：
+    - **服务端校验（必须）**：客户端只负责发起的请求，发货逻辑必须由服务端验证支付凭证（Receipt）后执行，绝不能信任客户端的回调。
+    - **代码混淆**：使用 ProGuard 或 R8 混淆代码，将 `oppPay`, `onSuccess` 等关键符号变成 `a.b.c`，增加逆向定位难度。
+    - **签名校验**：在应用运行时校验 APK 签名，防止重打包后的应用运行。
