@@ -1,0 +1,371 @@
+---
+title: 'AI 安全实战：基于随机森林的恶意 URL 检测模型实现与优化'
+date: '2025-12-24'
+tags: ['AI Security']
+draft: false
+summary: '从零开始构建一个 Web 攻击检测模型。从 CSIC 2010 数据集出发，经历特征工程、模型训练、误差分析（False Negatives），最终通过解码与字符特征优化提升模型召回率。'
+---
+
+## 架构总览：机器学习如何检测 Web 攻击？
+
+在开始写代码之前，我们需要建立全局视野。基于机器学习的 Web 威胁检测，本质上是一个**文本分类问题**。我们将 HTTP 请求视为文本，通过特征工程将其转化为数值向量，最后交给分类器判断。
+
+整个实战的逻辑架构如下：
+
+1.  **数据层**：获取原始 HTTP 请求数据（CSIC 2010）。
+2.  **特征层（Feature Engineering）**：
+    - _基础特征_：URL 长度、参数长度、关键词匹配。
+    - _进阶特征_：URL 解码、特殊字符分布、危险截断符统计。
+3.  **模型层**：使用随机森林（Random Forest）进行二分类。
+4.  **评估层**：关注 Recall（召回率）与 False Negative（漏报），并通过误差分析迭代模型。
+
+---
+
+## 第 1 步：数据准备与探索
+
+### 1.1 数据集选择
+
+本次实战推荐使用 **CSIC 2010 Web Attack Dataset**。
+
+**为什么选它？**
+
+- ✔ **场景专一**：专门为 Web 攻击设计，包含 SQL 注入、XSS、缓冲区溢出等真实 Payload。
+- ✔ **格式规范**：包含数万条标记好的 HTTP 请求（URL + 参数 + 头部）。
+- ✔ **标签明确**：天然适合二分类任务。
+
+**数据概览：**
+
+<img src="/static/images/detection_model/sample.png" alt="样本数据集" width="600" />
+
+### 1.2 认识数据字段
+
+拿到 CSV 后，我们需要明确哪些是**特征（Feature/X）**，哪个是**标签（Label/y）**。
+
+| 字段               | 含义                 | 用途                                |
+| :----------------- | :------------------- | :---------------------------------- |
+| **Method**         | HTTP 方法 (GET/POST) | 特征 (信息量较小，暂略)             |
+| **User-Agent**     | 客户端信息           | 特征 (待进阶处理)                   |
+| **cookie**         | Cookie 数据          | 特征 (高噪，暂略)                   |
+| **content**        | POST 参数            | **核心特征来源** (攻击重灾区)       |
+| **URL**            | 请求路径             | **核心特征来源**                    |
+| **lenght**         | 请求体长度           | **核心特征来源** (异常请求往往较长) |
+| **classification** | **分类标签**         | **目标变量 (y)**                    |
+
+**关于标签 (y) 的定义：**
+
+- `0`: 正常请求 (Normal)
+- `1`: 恶意请求 (Anomalous)
+
+---
+
+## 第 2 步：基础特征工程 (Feature Engineering V1.0)
+
+机器学习模型无法直接理解 "SELECT \* FROM..." 这样的字符串，我们需要将文本转化为**数字**。
+
+**特征选择策略：**
+
+- ✅ **A 类（直接可用）**：URL、Content、Length。
+- ⚠️ **B 类（需清洗）**：User-Agent、Cookie（本轮暂不处理）。
+- ❌ **C 类（弃用）**：classification（这是答案，不能当特征）。
+
+我们先构建一个包含三个维度的基础特征向量。
+
+### 2.1 读取数据
+
+```python
+import pandas as pd
+import re
+
+# 读取数据集
+df = pd.read_csv("dataset/csic_database.csv")
+print(df.head())
+```
+
+<img src="/static/images/detection_model/show.png" alt="展示df" width="600" />
+
+### 2.2 特征清洗：标准化 Content-Length
+
+原始数据中的 `lenght` 列包含非数字字符（如 "Content-Length: 68"）甚至空值，必须提取为纯整型。
+
+```python
+def extract_length(value):
+    """
+    从 'Content-Length: 68' 中提取数字 68
+    如果是空值 / 不合法，返回 0
+    """
+    if pd.isna(value):
+        return 0
+
+    value = str(value)
+    match = re.search(r'(\d+)', value)
+
+    if match:
+        return int(match.group(1))
+    else:
+        return 0
+
+# 应用转换
+df['content_length'] = df['lenght'].apply(extract_length)
+
+# 验证效果
+print(df[['lenght', 'content_length']].head(10))
+```
+
+<img src="/static/images/detection_model/length" alt="看length处理结果" width="600" />
+
+### 2.3 构造特征：URL 长度
+
+异常的 Web 请求（如缓冲区溢出尝试）往往具有超长的 URL。
+
+```python
+df['url_length'] = df['URL'].astype(str).apply(len)
+print(df[['URL', 'url_length']].head())
+```
+
+<img src="/static/images/detection_model/url.png" alt="url长度" width="600" />
+
+### 2.4 构造特征：攻击关键词统计
+
+这是最直观的特征。攻击者通常会使用特定的 SQL 关键字或 HTML 标签。我们将统计这些词出现的频率。
+
+```python
+# 定义关键词库
+sql_keywords = ['select', 'union', 'or', 'and', 'drop']
+xss_keywords = ['<script', 'alert', 'onerror']
+
+def count_keywords(text, keywords):
+    """
+    统计某段文本中，攻击关键词出现的次数
+    """
+    if pd.isna(text):
+        return 0
+
+    text = str(text).lower()
+    return sum(text.count(k) for k in keywords)
+
+# 生成特征
+df['sql_keyword_count'] = df['content'].apply(
+    lambda x: count_keywords(x, sql_keywords)
+)
+
+df['xss_keyword_count'] = df['content'].apply(
+    lambda x: count_keywords(x, xss_keywords)
+)
+
+print(df[['content', 'sql_keyword_count', 'xss_keyword_count']].tail(10))
+```
+
+<img src="/static/images/detection_model/hit.png" alt="对content命中计数" width="600" />
+
+---
+
+## 第 3 步：模型训练与基线评估
+
+现在，我们把从文本中提取出的“线索”（特征矩阵 X）和“答案”（标签 y）交给模型。
+
+### 3.1 数据切分
+
+**关键原则**：严禁使用训练集进行测试，否则就是“考试作弊”。我们使用 `train_test_split` 切分 20% 的数据作为验证集。
+
+```python
+from sklearn.model_selection import train_test_split
+
+# 构造特征矩阵 X
+X = df[[
+    'content_length',
+    'url_length',
+    'sql_keyword_count',
+    'xss_keyword_count'
+]]
+
+# 构造标签向量 y
+y = df['classification']
+
+# 切分数据
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y,
+    test_size=0.2,      # 20% 用于评估
+    random_state=42     # 固定随机种子，保证可复现
+)
+```
+
+<img src="/static/images/detection_model/Xypng" alt="看一下X和y的字段" width="600" />
+
+### 3.2 训练 Random Forest
+
+随机森林由多个决策树组成，它像一个由 100 位专家组成的委员会，通过投票决定一个请求是否恶意。它具有抗过拟合能力强、对噪声不敏感的优点。
+
+```python
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score, classification_report
+
+# 初始化模型：100棵树
+model = RandomForestClassifier(n_estimators=100, random_state=42)
+
+# 训练 (Fit)
+model.fit(X_train, y_train)
+
+# 预测 (Predict)
+y_pred = model.predict(X_test)
+```
+
+### 3.3 基线模型评估
+
+```python
+print("准确率：", accuracy_score(y_test, y_pred))
+print(classification_report(y_test, y_pred))
+```
+
+<img src="/static/images/detection_model/r1.png" alt="看第一次结果" width="600" />
+
+**📊 结果解读：**
+
+- **Accuracy (0.85)**：整体看似不错，85% 的判断是对的。
+- **Recall for Class 1 (0.79)**：**这是最致命的指标。**
+  - 这意味着：在 100 次真实的 Web 攻击中，模型只抓住了 79 次。
+  - **漏报率 21%**：对于安全防护来说，放过 20% 的攻击是不可接受的。
+
+我们来看混淆矩阵，直观感受一下漏报的情况：
+
+```python
+import matplotlib.pyplot as plt
+from sklearn.metrics import confusion_matrix
+import seaborn as sns
+
+# 混淆矩阵可视化代码...
+# (此处省略绘图代码，关注结果)
+```
+
+<img src="/static/images/detection_model/me.png" alt="混淆矩阵" width="600" />
+
+---
+
+## 第 4 步：误差分析 (Error Analysis)
+
+为了提升模型，我们不能盲目调参。必须找出**“为什么模型会漏报（False Negative）？”**
+
+### 4.1 提取漏报样本
+
+漏报（FN）的定义：`True Label = 1 (恶意)` 但 `Predicted = 0 (正常)`。
+
+```python
+# 重构测试集结果表
+test_df = X_test.copy()
+test_df['true_label'] = y_test.values
+test_df['pred_label'] = y_pred
+
+# 筛选漏报样本
+fn_samples = test_df[
+    (test_df['true_label'] == 1) &
+    (test_df['pred_label'] == 0)
+]
+
+print("漏报样本数量：", len(fn_samples))
+```
+
+<img src="/static/images/detection_model/lost.png" alt="漏报数" width="600" />
+
+### 4.2 溯源原始数据
+
+此时 `fn_samples` 里只有数字特征，看不出所以然。我们需要通过索引（Index）回溯到原始的 `df`，查看具体的 Payload。
+
+```python
+# 获取索引
+fn_indices = fn_samples.index
+
+# 回溯原始文本
+fn_raw = df.loc[fn_indices, ['URL', 'content', 'classification']]
+
+pd.set_option('display.max_colwidth', 200)
+print(fn_raw.head(10))
+```
+
+<img src="/static/images/detection_model/raw.png" alt="漏报原始数据" width="600" />
+
+**🔍 关键发现：**
+通过观察漏报数据，我们发现了两个严重问题：
+
+1.  **编码绕过**：攻击者使用了 URL Encoding（如 `%20union%20`），我们之前的简单的关键词匹配无法识别 `%20` 这种形式。
+2.  **符号特征丢失**：很多 SQL 注入不一定包含 `select`，但一定包含 `'` (单引号)、`--` (注释符) 或 `=` (等号)。我们忽略了这些特殊符号。
+
+---
+
+## 第 5 步：模型优化与迭代 (V2.0)
+
+针对误差分析的发现，我们对特征工程进行针对性升级。
+
+### 5.1 引入 URL 解码
+
+```python
+from urllib.parse import unquote
+
+# 新增解码后的内容列
+df['decoded_content'] = df['content'].apply(
+    lambda x: unquote(str(x)) if pd.notna(x) else ''
+)
+
+# 基于解码后的内容重新统计关键词
+df['sql_keyword_count_decoded'] = df['decoded_content'].apply(
+    lambda x: count_keywords(x, sql_keywords)
+)
+```
+
+### 5.2 危险字符统计
+
+我们不再局限于英文单词，而是关注 SQL注入和 XSS 中常见的语法符号。
+
+```python
+danger_chars = ["'", '"', '--', ';', '=', '(', ')']
+
+def count_danger_chars(text):
+    if pd.isna(text):
+        return 0
+    text = str(text)
+    return sum(text.count(c) for c in danger_chars)
+
+# 统计解码后内容中的危险字符
+df['danger_char_count'] = df['decoded_content'].apply(count_danger_chars)
+```
+
+### 5.3 重新训练与验证
+
+更新特征矩阵，加入新的特征维度，再次训练模型。
+
+```python
+# 升级后的特征列表
+features_v2 = [
+    'content_length',
+    'url_length',
+    'sql_keyword_count',
+    'sql_keyword_count_decoded', # 新增
+    'xss_keyword_count',
+    'danger_char_count'          # 新增
+]
+
+X = df[features_v2]
+y = df['classification']
+
+# 重新切分
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42
+)
+
+# 重新训练
+model.fit(X_train, y_train)
+y_pred = model.predict(X_test)
+
+# 最终报告
+print(classification_report(y_test, y_pred))
+```
+
+<img src="/static/images/detection_model/r2.png" alt="最终优化结果" width="600" />
+
+### 📝 总结
+
+通过引入解码和字符级特征，我们得到显著的提升：
+
+- **Recall (Class 1)**：从 **0.79** 提升到了 **0.9x**（具体视训练结果而定）。
+- **Precision**：保持在高位。
+
+这告诉我们，在 AI 安全领域：
+**算法（Random Forest）很重要，但对安全数据的理解（Feature Engineering）更重要。** 一个懂得攻击原理（如 URL 编码、闭合字符）的工程师，能比单纯调参的算法工程师构建出更强大的检测模型。
