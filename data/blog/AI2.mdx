@@ -147,20 +147,244 @@ $$ Pr(H|E) = \frac{Pr(E|H) \cdot Pr(H)}{Pr(E)} $$
 决策树通过递归分割数据。
 
 <img src="/static/images/AI/decision-tree-example-p40.png" alt="决策树结构示例" width="700" />
+这就是决策树！它是一种**监督学习 (Supervised Learning)**
+算法。它的最终目标是创建一个模型，通过学习一系列的**“如果/那么” (If/Then)
+规则**，来预测目标变量的值。 在专业术语中，它也被称为 **CART** (Classification and Regression
+Trees，分类与回归树)。 核心术语如下 1. **Attribute (属性)**: 数据的特征，比如“颜色”、“重量”。 2.
+**Instance (实例)**: 一行具体的数据，也叫“特征向量”。 3. **Sample (样本)**:
+你的训练数据，包含了输入和对应的正确答案（标签）。 4. **Target Concept (目标概念)**:
+我们想要预测的结果（比如：这封邮件是不是垃圾邮件）。 5. **Testing Set (测试集)**:
+用来考试的数据，看看模型学得怎么样的。 1. **Attribute (属性)**: 数据的特征，比如“颜色”、“重量”。 2.
+**Instance (实例)**: 一行具体的数据，也叫“特征向量”。 3. **Sample (样本)**:
+你的训练数据，包含了输入和对应的正确答案（标签）。 4. **Target Concept (目标概念)**:
+我们想要预测的结果（比如：这封邮件是不是垃圾邮件）。 5. **Testing Set (测试集)**:
+用来考试的数据，看看模型学得怎么样的。 **如何构建一棵树？**
+构建决策树的过程其实就是一个不断“提问”和“分裂”的过程：
 
-- **分裂标准**: 如何决定从哪个特征切分？
-  - **Gini Impurity (基尼不纯度)**: $1 - \sum p_i^2$
-  - **Entropy (熵)**: $-\sum p_i \log_2(p_i)$
-  - 模型会选择能让“信息增益”最大的特征进行分裂。
-- **剪枝 (Pruning)**: 防止**过拟合 (Overfitting)** 的关键。
-  - _Minimum Error_: 剪枝到交叉验证误差最小点。
-  - _Smallest Tree_: 在误差允许范围内选最小的树（奥卡姆剃刀）。
+1.  **获取数据**：计算数据的统计不确定性（混乱程度）。
+2.  **制定问题**：在每个节点提出一个问题（比如：$X > 5$ 吗？）。
+3.  **分裂**：根据问题的答案（True/False），将数据分成两拨。
+4.  **计算信息**：看看分完之后，数据是不是变纯净了？
+5.  **递归**：对分出来的子节点重复上述过程，直到分不动为止。
+
+Python 代码
+
+```python
+import numpy as np
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+
+# 1. 导入数据
+def importdata():
+    # 假设读取一个名为 balance-scale.csv 的文件
+    # 实际运行时请替换为真实路径
+    balance_data = pd.read_csv('balance-scale.csv', sep=',', header=None)
+
+    print("Dataset Length:", len(balance_data))
+    print("Dataset Shape:", balance_data.shape)
+    print("Dataset Head:\n", balance_data.head())
+    return balance_data
+
+# 2. 切分数据
+def splitdataset(balance_data):
+    # 假设第0列是结果(Y)，第1-4列是特征(X)
+    X = balance_data.values[:, 1:5]
+    Y = balance_data.values[:, 0]
+
+    # 70% 训练，30% 测试
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, Y, test_size=0.3, random_state=100)
+
+    return X, Y, X_train, X_test, y_train, y_test
+
+# 3. 使用 Gini (基尼系数) 训练
+def train_using_gini(X_train, X_test, y_train):
+    # 创建分类器对象
+    clf_gini = DecisionTreeClassifier(
+        criterion="gini",
+        random_state=100,
+        max_depth=3,
+        min_samples_leaf=5
+    )
+    clf_gini.fit(X_train, y_train)
+    return clf_gini
+
+# 4. 使用 Entropy (熵) 训练
+def train_using_entropy(X_train, X_test, y_train):
+    # 创建分类器对象
+    clf_entropy = DecisionTreeClassifier(
+        criterion="entropy",
+        random_state=100,
+        max_depth=3,
+        min_samples_leaf=5
+    )
+    clf_entropy.fit(X_train, y_train)
+    return clf_entropy
+
+# 5. 预测与评估
+def prediction(X_test, clf_object):
+    y_pred = clf_object.predict(X_test)
+    print("Predicted values:")
+    print(y_pred)
+    return y_pred
+
+def cal_accuracy(y_test, y_pred):
+    print("Confusion Matrix:\n", confusion_matrix(y_test, y_pred))
+    print("Accuracy:", accuracy_score(y_test, y_pred)*100)
+    print("Report:\n", classification_report(y_test, y_pred))
+
+# 主程序
+def main():
+    data = importdata()
+    X, Y, X_train, X_test, y_train, y_test = splitdataset(data)
+
+    clf_gini = train_using_gini(X_train, X_test, y_train)
+    clf_entropy = train_using_entropy(X_train, X_test, y_train)
+
+    print("--- Results Using Gini Index ---")
+    y_pred_gini = prediction(X_test, clf_gini)
+    cal_accuracy(y_test, y_pred_gini)
+
+    print("--- Results Using Entropy ---")
+    y_pred_entropy = prediction(X_test, clf_entropy)
+    cal_accuracy(y_test, y_pred_entropy)
+
+if __name__ == "__main__":
+    main()
+```
+
+**决策树的大坑**：过拟合 (Overfitting)
+决策树最大的缺点就是容易“钻牛角尖”。
+什么是过拟合？ 模型把训练数据背得太熟了，连数据里的**噪音**都当成了规律。结果就是：考试（测试集）成绩很差。
+怎么解决？ 也就是书中提到的** Pruning **(剪枝)。这就好比修剪盆景，把那些不重要的、细枝末节的树枝剪掉。
+最小误差 (Minimum Error)：剪到交叉验证误差最小的那个点。
+最小树 (Smallest Tree)：在误差允许范围内，选择结构最简单的树。####随机森林与 Bagging
+既然一棵树容易犯错（方差大），那我们种一片森林怎么样？
+
+1. 随机森林 (Random Forest)
+
+- 随机森林就是由成百上千棵决策树组成的。
+- 每棵树都独立训练。
+- 每棵树的训练数据和特征都是随机选取的。
+- **预测平均 (Predictive Averaging)**：如果是分类问题，大家投票，票数多的赢；如果是回归问题，大家取平均值。
+
+2. Bagging (Bootstrap Aggregation)
+   这是一种技术，随机森林就是用了这种技术。
+
+- Bootstrap: 从原始数据中有放回地随机抽取样本，生成新的训练集。
+- Aggregation: 把所有模型的预测结果结合起来。
+  为什么要用 Bagging？
+  决策树对数据非常敏感（High Variance）。如果数据稍微变一点点，整棵树的结构可能就会大变。Bagging 通过平均多个模型，让结果变得更加稳定、鲁棒。
 
 ### E. K-近邻 (KNN)
 
-- **懒惰算法**: 不训练，预测时才计算。
-- **距离公式**: 欧几里得距离。
-  $$ D(X, Y) = \sqrt{\sum\_{i=1}^{n} (x_i - y_i)^2} $$
+用一句中国老话来概括它的核心思想，就是：**“近朱者赤，近墨者黑”**。
+或者：**“告诉我你的朋友是谁，我就知道你是谁。”**
+
+- **类型**：监督学习 (Supervised Learning)。
+- **用途**：既可以做**分类**（判断是猫还是狗），也可以做**回归**（预测房价）。
+  **它是“懒惰”的 (Lazy Algorithm)**
+- 它没有专门的训练阶段 (No specialized training segments)。
+  _ **勤奋的算法（如神经网络）**：在考试（预测）前，会花大量时间学习课本，总结出一套公式（模型）。考试时，它只带公式进考场，把课本扔了。
+  _ **懒惰的算法（KNN）**：平时根本不学习（不训练）。考试时，它把整本厚厚的课本（所有数据集）带进考场，遇到一道题，立马翻书找类似的例题，照猫画虎。\* **特点**：训练时间几乎为 0，但预测时间很慢（因为要翻书）。
+  **它是“非参数”的 (Non-Parametric)**
+- 不对底层数据做任何假设。
+  _ 线性回归假设数据是一条直线（参数化）。
+  _ KNN 不假设数据是圆的还是扁的。数据长什么样，它就适应什么样。这让它非常灵活。
+  我们可以把 KNN 的工作过程拆解为 5 个步骤。假设我们有一个未知的神秘数据点（测试点），想知道它是什么类别：
+
+1.  **初始化 (Initialize)**：
+    - 加载所有数据（训练集和测试集）。
+    - 选定一个 **"K"** 值（比如 K=3，意思是“我要找 3 个最近的邻居”）。
+
+2.  **计算距离 (Calculate Distance)**：
+    - 拿出尺子，计算这个“神秘点”与训练集中**每一个点**的距离。
+
+3.  **排序 (Sort)**：
+    - 将计算出的距离从小到大排序。
+
+4.  **选出邻居 (Choose Neighbors)**：
+    - 选取距离最近的 **Top K** 个点（这就是你的 K 个邻居）。
+
+5.  **投票 (Vote/Label)**：
+    _ 看看这 K 个邻居分别属于什么类别。
+    _ **少数服从多数**：如果 3 个邻居里有 2 个是“鸢尾花A”，1 个是“鸢尾花B”，那么我们判定这个神秘点也是“鸢尾花A”
+    **数学核心——欧几里得距离**
+    怎么算“距离”？最经典的**欧几里得距离 (Euclidean Distance)** 公式。
+
+其实就是初中学的勾股定理在多维空间的应用：
+
+$$ Distance(X, X*i) = \sqrt{\sum (X - X*{ij})^2} $$
+
+- $X$：我们要预测的数据点。
+- $X_i$：已知的训练数据点。
+- **解释**：把两个点在每一个维度（比如身高、体重、年龄）上的差值平方后相加，最后开根号。
+
+_注：也可以使用其他距离，比如余弦距离 (Cosine Distance)，常用于文本分析。_
+
+```r
+# 定义函数，输入是测试集、训练集和 K值
+Knn_predict <- function(test, train, k_value){
+
+    # 循环 1：遍历每一个测试数据
+    For(I in c(1:row(test))){
+
+        # 循环 2：遍历每一个训练数据
+        For (j in c(1:row(train))){
+            # 计算距离 (ED = Euclidean Distance)
+            dist <- ED(test[I], train[j])
+            # 记录距离和对应的标签(Char)
+        }
+
+        # 排序：把距离最近的排在前面
+        Df <- df[order(df$dist),]
+
+        # 截取：只取前 K 个 (Top K)
+        Df <- df[1:k_value,]
+
+        # 循环 3：投票
+        # 统计这 K 个邻居里，Setosa 有几个？Versicolor 有几个？
+        # (代码通过 if-else 进行计数)
+
+        # 返回票数最多的那个名字
+        Return(pred)
+    }
+}
+```
+
+```python
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.datasets import load_iris
+
+# 1. 准备数据 (这里用经典的 Iris 鸢尾花数据集，这也是原书代码中暗示的数据)
+iris = load_iris()
+X = iris.data  # 特征
+y = iris.target # 标签
+
+# 切分训练集和测试集
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
+
+# 2. 初始化模型 (K=3)
+# 这一步对应了“懒惰学习”，它只是把数据存起来
+knn = KNeighborsClassifier(n_neighbors=3)
+
+# 3. 拟合/存储数据
+knn.fit(X_train, y_train)
+
+# 4. 预测
+# 这一步对应了“计算距离、排序、投票”的所有过程
+predictions = knn.predict(X_test)
+
+print("实际标签:", y_test)
+print("预测标签:", predictions)
+
+# 5. 评估准确率
+accuracy = knn.score(X_test, y_test)
+print(f"模型准确率: {accuracy * 100:.2f}%")
+```
 
 ## 3. 无监督学习与关联规则
 
