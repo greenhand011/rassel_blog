@@ -1,0 +1,303 @@
+---
+title: '新手实战：用 PyTorch + CNN 亲手训练一个恶意 URL 检测模型'
+date: '2025-12-25'
+tags: ['AI Security']
+draft: false
+summary: '理论学会了，手痒怎么办？本文提供完整可运行的代码，基于 PyTorch 构建字符级 CNN 模型，手把手带你跑通恶意 URL 检测的训练全流程。'
+---
+
+## 前言
+
+在上一篇文章中，我们学习了 CNN 如何像拿着“放大镜”一样扫描 URL 中的恶意关键词。今天，我们拒绝纸上谈兵，直接上代码！
+
+我们将使用大家最熟悉的 **Kaggle 数据集 (Malicious URLs dataset)**，用 PyTorch 搭建一个字符级 CNN 模型。
+
+> **🎯 目标**：输入一条 URL，AI 告诉你它是正常（benign）、钓鱼（phishing）、篡改（defacement）还是恶意软件（malware）。
+
+---
+
+## 一、准备工作
+
+### 1.1 环境要求
+
+确保你的电脑里装了以下 Python 库：
+
+```bash
+pip install torch pandas scikit-learn
+```
+
+### 1.2 数据集
+
+请确保你已经下载了数据集，并放在了 **`E:/dataset/malicious_phish.csv`**。
+
+- 数据集通常包含两列：`url`（链接文本）和 `type`（标签类型）。
+
+---
+
+## 二、代码全解析
+
+我们将代码分为四个部分：**字典与预处理**、**数据集加载**、**模型搭建**、**训练循环**。
+
+### 第一步：字符字典与预处理
+
+电脑不认识字符，我们要把 `a, b, c, .` 变成 `1, 2, 3, 4`。
+
+```python
+import string
+
+# 1. 制作字典
+# string.printable 包含了数字、字母、标点符号等所有常用字符
+ALL_CHARS = string.printable
+# 建立字符到数字的映射，从 1 开始（0 留给填充位）
+char2idx = {c: i + 1 for i, c in enumerate(ALL_CHARS)}
+char2idx["<PAD>"] = 0
+
+# 2. 设定最大长度
+MAX_LEN = 200
+
+# 3. 编码函数
+def encode_url(url):
+    # 查表：字符 -> 数字
+    seq = [char2idx.get(c, 0) for c in url]
+
+    # 统一长度：不够补0，太长截断
+    if len(seq) < MAX_LEN:
+        seq += [0] * (MAX_LEN - len(seq))
+    else:
+        seq = seq[:MAX_LEN]
+
+    return seq
+```
+
+### 第二步：定义数据集 (Dataset)
+
+这一步告诉 PyTorch 怎么读你的 CSV 文件。
+
+```python
+from torch.utils.data import Dataset
+import pandas as pd
+import torch
+
+# 标签映射表
+label2idx = {
+    "benign": 0,
+    "phishing": 1,
+    "defacement": 2,
+    "malware": 3
+}
+
+class URLDataset(Dataset):
+    def __init__(self, csv_path):
+        # 读取 CSV，通过 on_bad_lines 跳过可能损坏的行
+        self.df = pd.read_csv(csv_path, on_bad_lines='skip')
+
+    def __len__(self):
+        return len(self.df)
+
+    def __getitem__(self, idx):
+        # 获取第 idx 条数据
+        url = str(self.df.iloc[idx]["url"]) # 确保转为字符串
+        label = self.df.iloc[idx]["type"]
+
+        # 转换数据类型
+        # x 是输入特征 (LongTensor 用于 Embedding)
+        x = torch.tensor(encode_url(url), dtype=torch.long)
+        # y 是分类标签
+        y = torch.tensor(label2idx[label], dtype=torch.long)
+
+        return x, y
+```
+
+### 第三步：搭建 CNN 模型 (The Brain)
+
+这是我们的核心模型。
+
+```python
+import torch.nn as nn
+
+class CNN_URL(nn.Module):
+    def __init__(self, vocab_size, num_classes):
+        super().__init__()
+
+        # 1. Embedding 层：把数字变成向量
+        # 64 是向量维度
+        self.embedding = nn.Embedding(vocab_size, 64, padding_idx=0)
+
+        # 2. 卷积层：扫描特征
+        # in=64 (向量维度), out=128 (提取128种特征), kernel=3 (窗口大小)
+        self.conv1 = nn.Conv1d(in_channels=64, out_channels=128, kernel_size=3)
+
+        # 3. 池化层：提取最强特征
+        # 这里使用 AdaptiveAvgPool (自适应平均池化)，也可以换成 MaxPool
+        self.pool = nn.AdaptiveAvgPool1d(1)
+
+        # 4. 全连接层：分类
+        self.fc = nn.Linear(128, num_classes)
+
+    def forward(self, x):
+        # x: [Batch, 200]
+        x = self.embedding(x)      # -> [Batch, 200, 64]
+
+        # 卷积层要求 Channel 在第 2 维，所以需要转置 (Swap dims 1 and 2)
+        x = x.transpose(1, 2)      # -> [Batch, 64, 200]
+
+        x = self.conv1(x)          # -> [Batch, 128, 198]
+
+        # 激活函数 (增加非线性能力)
+        x = torch.relu(x)
+
+        x = self.pool(x)           # -> [Batch, 128, 1]
+        x = x.squeeze(-1)          # -> [Batch, 128] (去掉多余维度)
+
+        return self.fc(x)          # -> [Batch, 4]
+```
+
+---
+
+## 三、完整可运行脚本
+
+将所有积木拼在一起，加上训练循环（Training Loop）。你可以直接复制这段代码到一个 `.py` 文件中运行。
+
+```python
+import string
+import pandas as pd
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader, random_split
+import time
+
+# --- 配置参数 ---
+CSV_PATH = "E:/dataset/malicious_phish.csv" # 你的文件路径
+BATCH_SIZE = 64
+LR = 0.001
+EPOCHS = 5
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+print(f"正在使用设备: {DEVICE}")
+
+# --- 1. 预处理 ---
+ALL_CHARS = string.printable
+char2idx = {c: i + 1 for i, c in enumerate(ALL_CHARS)}
+char2idx["<PAD>"] = 0
+MAX_LEN = 200
+
+def encode_url(url):
+    seq = [char2idx.get(c, 0) for c in url]
+    if len(seq) < MAX_LEN:
+        seq += [0] * (MAX_LEN - len(seq))
+    else:
+        seq = seq[:MAX_LEN]
+    return seq
+
+label2idx = {"benign": 0, "phishing": 1, "defacement": 2, "malware": 3}
+
+# --- 2. 数据集 ---
+class URLDataset(Dataset):
+    def __init__(self, csv_path):
+        # 仅读取部分数据用于快速演示，实际跑可以去掉 nrows
+        # self.df = pd.read_csv(csv_path, nrows=50000)
+        self.df = pd.read_csv(csv_path)
+
+    def __len__(self):
+        return len(self.df)
+    def __getitem__(self, idx):
+        url = str(self.df.iloc[idx]["url"])
+        label = self.df.iloc[idx]["type"]
+        x = torch.tensor(encode_url(url), dtype=torch.long)
+        y = torch.tensor(label2idx[label], dtype=torch.long)
+        return x, y
+
+# --- 3. 模型 ---
+class CNN_URL(nn.Module):
+    def __init__(self, vocab_size, num_classes):
+        super().__init__()
+        self.embedding = nn.Embedding(vocab_size, 64, padding_idx=0)
+        self.conv1 = nn.Conv1d(64, 128, kernel_size=3)
+        self.pool = nn.AdaptiveAvgPool1d(1) # 或者 nn.AdaptiveMaxPool1d(1)
+        self.fc = nn.Linear(128, num_classes)
+        self.relu = nn.ReLU() # 显式定义激活函数
+
+    def forward(self, x):
+        x = self.embedding(x)
+        x = x.transpose(1, 2)
+        x = self.conv1(x)
+        x = self.relu(x)
+        x = self.pool(x).squeeze(-1)
+        return self.fc(x)
+
+# --- 4. 主程序 ---
+if __name__ == "__main__":
+    # 加载数据
+    print("正在读取数据...")
+    full_dataset = URLDataset(CSV_PATH)
+
+    # 划分训练集(80%) 和 测试集(20%)
+    train_size = int(0.8 * len(full_dataset))
+    test_size = len(full_dataset) - train_size
+    train_ds, test_ds = random_split(full_dataset, [train_size, test_size])
+
+    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True)
+    test_loader = DataLoader(test_ds, batch_size=BATCH_SIZE, shuffle=False)
+
+    # 初始化模型
+    vocab_size = len(char2idx) + 1
+    num_classes = 4
+    model = CNN_URL(vocab_size, num_classes).to(DEVICE)
+
+    # 损失函数与优化器
+    criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=LR)
+
+    # 开始训练
+    print("开始训练 CNN 模型...")
+    for epoch in range(EPOCHS):
+        start_time = time.time()
+        model.train() # 训练模式
+        total_loss = 0
+
+        for x, y in train_loader:
+            x, y = x.to(DEVICE), y.to(DEVICE)
+
+            optimizer.zero_grad()   # 梯度归零
+            outputs = model(x)      # 前向传播
+            loss = criterion(outputs, y) # 计算损失
+            loss.backward()         # 反向传播
+            optimizer.step()        # 更新参数
+
+            total_loss += loss.item()
+
+        # 每个 Epoch 结束后测试一下准确率
+        model.eval() # 评估模式
+        correct = 0
+        total = 0
+        with torch.no_grad():
+            for x, y in test_loader:
+                x, y = x.to(DEVICE), y.to(DEVICE)
+                outputs = model(x)
+                _, predicted = torch.max(outputs.data, 1)
+                total += y.size(0)
+                correct += (predicted == y).sum().item()
+
+        acc = 100 * correct / total
+        print(f"Epoch [{epoch+1}/{EPOCHS}] | "
+              f"Loss: {total_loss/len(train_loader):.4f} | "
+              f"Test Acc: {acc:.2f}% | "
+              f"Time: {time.time()-start_time:.1f}s")
+
+    print("训练完成！")
+
+    # 保存模型
+    torch.save(model.state_dict(), "cnn_url_model.pth")
+    print("模型已保存为 cnn_url_model.pth")
+```
+
+---
+
+## 四、写在最后：新手避坑指南
+
+1.  **文件路径**：代码里写的是 `E:/dataset/malicious_phish.csv`，请务必确认你的文件名和路径完全一致，注意斜杠方向 `/`。
+2.  **显存问题**：如果你在 GPU 上跑出现 `Out of memory`，请把 `BATCH_SIZE` 改小一点（比如改到 32 或 16）。
+3.  **CPU 也能跑**：没有显卡没关系，代码会自动检测使用 CPU，只是稍微慢一点点，喝杯咖啡就好了。
+4.  **准确率**：对于这个数据集，简单的 CNN 通常能很快达到 90% 以上的准确率。如果你的准确率很低，检查一下数据集的标签分布是否平衡。
+
+快去运行代码，享受你的第一个 AI 安全模型吧！
