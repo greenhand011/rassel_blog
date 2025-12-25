@@ -1,0 +1,205 @@
+---
+title: 'Android 逆向实战：暴力破解《切水果大战》内购支付逻辑'
+date: '2025-12-25'
+tags: ['Android Security']
+draft: false
+summary: '本文记录了使用 Android Killer 对某款切水果游戏进行内购破解的完整过程。详细对比了“逻辑覆盖法”与“调用溯源法”两种破解思路，并完成了危险权限的剔除。'
+---
+
+> ⚠️ **免责声明**：本文仅供网络安全学习与技术研究交流，旨在揭示客户端校验的安全风险。请勿用于非法用途，请支持正版软件。
+
+## 一、逆向背景与环境
+
+本次目标是一款经典的单机手游《切水果大战》。我们的目标是在不支付实际费用的情况下，成功购买游戏内的道具。
+
+- **工具**：Android Killer v1.3.1
+- **测试设备**：Android 模拟器 / 真机
+- **核心目标**：绕过支付验证，模拟支付成功回调。
+
+### 初始状态分析
+
+进入游戏，点击购买道具，会弹出运营商或第三方的支付界面。
+
+<div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px' }}>
+  <img src="/static/images/fruit/pay1.png" alt="游戏内购道具选择界面" style={{ width: '48%' }} />
+  <img src="/static/images/fruit/pay2.png" alt="游戏支付确认弹窗" style={{ width: '48%' }} />
+</div>
+
+---
+
+## 二、定位关键代码
+
+### 2.1 字符串搜索（String Search）
+
+将 APK 拖入 Android Killer 进行反编译。反编译完成后，我们需要寻找代码中的突破口。通常，UI 界面上显示的文字是最好的线索。
+
+**尝试 1：搜索“支付失败”**
+首先将“支付失败”转换为 Unicode 编码 `\u652f\u4ed8\u5931\u8d25` 进行搜索。
+
+<div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px' }}>
+  <img
+    src="/static/images/fruit/search1.png"
+    alt="搜索支付失败Unicode编码"
+    style={{ width: '48%' }}
+  />
+  <img src="/static/images/fruit/search2.png" alt="搜索结果为空" style={{ width: '48%' }} />
+</div>
+
+**结果**：未搜到。这说明开发者可能没有直接使用这就话，或者是通过图片/服务端返回显示的。
+
+**尝试 2：扩大范围，搜索“失败”**
+缩短关键词，将“失败”转换为 Unicode 编码 `\u5931\u8d25` 再次搜索。
+
+<img src="/static/images/fruit/search3.png" alt="搜索失败Unicode编码得到多个结果" width="700" />
+
+**结果**：这次找到了多个相关文件：
+
+1.  `smali\com\mydefinemmpaytool\HttpUtil.smali`
+2.  `smali\com\mydefinemmpay\tool\VogoAct$loadingView.smali`
+3.  `smali\com\mydefinemmpaytool\VlogoAct.smali`
+4.  `smali\com\mydefinemmpay\tool\MymmPay.smali`
+5.  `smali\com\qsg\payconfig\PayConfig.smali`
+
+### 2.2 筛选关键类
+
+在上述文件中，我将目标锁定在 **`smali\com\mydefinemmpay\tool\MymmPay.smali`**。
+
+**🔍 为什么选它？**
+
+- `HttpUtil` 通常负责网络请求底层，属于通用工具类，不太可能包含具体的支付业务逻辑回调。
+- `VlogoAct` 和 `loadingView` 听起来像是在处理启动页或加载动画。
+- `PayConfig` 显然是存配置信息的（如商户ID等）。
+- **`MymmPay`**（My Mobile Payment）：从命名来看，这个类极有可能是支付逻辑的核心控制器，负责调度支付状态（成功、失败、取消）。
+
+---
+
+## 三、破解方法 A：逻辑覆盖法（无脑替换）
+
+### 3.1 分析支付回调方法
+
+双击打开 `MymmPay.smali`，通过浏览代码结构，我们发现了三个非常关键的方法，分别对应支付的三种结果：
+
+<div style={{ display: 'flex', justifyContent: 'space-between', gap: '5px' }}>
+  <img
+    src="/static/images/fruit/payResultFalse.png"
+    alt="Smali代码：支付失败方法 payResultFalse"
+    style={{ width: '32%' }}
+  />
+  <img
+    src="/static/images/fruit/payResultCancel.png"
+    alt="Smali代码：支付取消方法 payResultCancel"
+    style={{ width: '32%' }}
+  />
+  <img
+    src="/static/images/fruit/payResultSuccess.png"
+    alt="Smali代码：支付成功方法 payResultSuccess"
+    style={{ width: '32%' }}
+  />
+</div>
+
+- `payResultSuccess`: 支付成功后的处理逻辑（发货）。
+- `payResultFalse`: 支付失败的处理逻辑。
+- `payResultCancel`: 用户取消支付的处理逻辑。
+
+### 3.2 修改逻辑
+
+**操作步骤：**
+
+1.  复制 `payResultSuccess` 方法体内的所有代码（除了 `.locals` 和参数定义）。
+2.  清空 `payResultFalse` 和 `payResultCancel` 方法体内的原有逻辑。
+3.  将复制的“成功代码”粘贴进去。
+
+**原理：** 无论用户点击取消，还是支付失败，程序都会执行“支付成功”的代码逻辑，从而实现免费内购。
+
+### 3.3 去除危险权限（安全加固）
+
+很多这类游戏会偷偷在后台发送短信扣费。为了防止意外扣费，我们需要修改 `AndroidManifest.xml`。
+搜索并删除以下权限：
+
+```xml
+<!-- 删除短信发送权限 -->
+<uses-permission android:name="android.permission.SEND_SMS"/>
+<!-- 删除拨打电话权限 -->
+<uses-permission android:name="android.permission.CALL_PHONE"/>
+```
+
+### 3.4 效果验证
+
+编译安装后，点击购买道具，然后直接点击取消或关闭支付窗口。
+
+<div style={{ display: 'flex', justifyContent: 'space-between', gap: '5px' }}>
+  <img src="/static/images/fruit/success1.png" alt="游戏内购成功提示1" style={{ width: '32%' }} />
+  <img src="/static/images/fruit/success2.png" alt="游戏内购成功提示2" style={{ width: '32%' }} />
+  <img src="/static/images/fruit/success3.png" alt="道具已到账" style={{ width: '32%' }} />
+</div>
+
+---
+
+## 四、破解方法 B：调用溯源法（更优雅的修改）
+
+方法 A 虽然简单，但涉及大量的代码复制，容易因为寄存器数量（`.locals`）不匹配导致崩溃。方法 B 则从**控制流**入手，修改更加精准。
+
+### 4.1 思路分析
+
+**正常逻辑**：
+点击购买 -> 调起支付 SDK -> SDK 返回结果码 -> 游戏根据结果码调用 `payResultSuccess` 或 `payResultFalse`。
+
+**破解思路**：
+找到是谁在调用 `payResultFalse`，强行让他改口去调用 `payResultSuccess`。
+
+### 4.2 溯源调用者 (Xref)
+
+在 `MymmPay.smali` 中搜索 `payResultFalse`，查找它是被哪里调用的。
+
+<img src="/static/images/fruit/f2.png" alt="搜索 payResultFalse 的调用位置" width="700" />
+
+我们定位到了一个 `Handler` 消息处理或者 `Switch` 判断结构中。
+
+### 4.3 修改分支逻辑
+
+查看调用处的代码：
+
+<img src="/static/images/fruit/method.png" alt="支付结果的分发逻辑代码" width="700" />
+
+结合上下文（通常是 `pswitch` 结构）：
+
+<img src="/static/images/fruit/case.png" alt="Smali Switch-Case 结构分析" width="700" />
+
+**代码分析：**
+
+- `pswitch_0`：对应 Case 0，代码跳转到 `:pswitch_0` 标签，这里调用了 `payResultSuccess`（成功）。
+- `pswitch_1`：对应 Case 1，代码跳转到 `:pswitch_1` 标签，这里调用了 `payResultFalse`（失败）。
+
+**修改操作：**
+找到 `:pswitch_1` 标签下的调用指令：
+
+```smali
+# 修改前
+invoke-direct {p0}, Lcom/mydefinemmpay/tool/MymmPay;->payResultFalse()V
+
+# 修改后
+invoke-direct {p0}, Lcom/mydefinemmpay/tool/MymmPay;->payResultSuccess()V
+```
+
+甚至更简单的改法：直接让 `pswitch_1` 的跳转目标也指向 `:pswitch_0`。
+
+### 4.4 总结
+
+编译后测试，同样成功。
+
+**方法 B 的优点**：
+
+1.  **修改量极小**：只改了一行代码。
+2.  **稳定性高**：不需要担心寄存器复用冲突。
+3.  **通用性**：这是逆向工程中“修改关键跳转（Patch Jump）”的标准思维。
+
+---
+
+## 五、结语
+
+通过这个案例，我们演示了 Android 逆向中两种最经典的破解思维：
+
+1.  **结果篡改**：不管过程如何，我强行重写结果（方法 A）。
+2.  **流程劫持**：在决策的分岔路口，把通往“失败”的路标指向“成功”（方法 B）。
+
+再次提醒，逆向技术应主要用于安全加固与漏洞挖掘，请尊重开发者的劳动成果。
