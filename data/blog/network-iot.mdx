@@ -1,0 +1,172 @@
+---
+title: '【网络层黑客】看不见的战场：IoT 网络协议逆向与攻击指南'
+date: '2025-12-29'
+tags: ['IoT Security']
+draft: false
+summary: '假如你没法拆机，网络层就是你最大的攻击面。从 Nmap 扫描的禁忌到专有协议的逆向，带你通过网线接管设备。'
+---
+
+如果说硬件层攻击是“贴脸输出”，那么**网络层攻击**就是“隔空打牛”。
+
+在 IoT 的世界里，网络层（Network Layer）通常是**最大的攻击面**。所有的组件——从传感器到网关，从手机 App 到云端服务器——都必须通过网络说话。
+
+只要你能听懂它们的语言（协议），或者干扰它们的对话（中间人攻击），你就能控制整个系统。本篇博客将基于《Practical IoT Hacking》第三章的网络部分，教你如何像手术刀一样精准地剖析 IoT 网络。
+
+## 一、 侦察：绘制敌军地图 (Reconnaissance)
+
+在发起攻击前，你必须先搞清楚网络里都有谁。这分为**被动侦察**和**主动侦察**。
+
+### 1. 拓扑映射 (Topology Mapping)
+
+IoT 环境很复杂，不像传统 IT 网络那么扁平。你需要画出一张拓扑图：
+
+- **L2 层（链路层）**：谁和谁连在同一个 Wi-Fi 或交换机下？
+- **L3 层（网络层）**：流量是怎么跨越路由器去往云端的？
+
+<img src="/static/images/IOT/network_topology_diagram.png" alt="Figure 3-4: A simple topology diagram of a home network" width="700" />
+*(图注：一个典型的 IoT 拓扑。心脏起搏器 -> 家庭监控器 -> Wi-Fi 路由器 -> 防火墙 -> 云端。攻击者可以在任意节点切入。)*
+
+### 2. 主机发现 (Host Discovery)
+
+你要找出活着的设备 IP。
+
+- **ARP 扫描**：如果你和设备在同一个局域网，ARP 扫描是最快且最隐蔽的。
+- **ICMP (Ping)**：传统的 Ping 扫描。
+- **广播监听**：很多 IoT 设备会通过 mDNS, SSDP 或 UPnP 疯狂广播自己的存在（“我是飞利浦灯泡，我在这里！”）。
+
+---
+
+## 二、 扫描的艺术与禁忌 (Scanning & Fingerprinting)
+
+找到了 IP，下一步是看看它开了什么端口，跑了什么系统。
+
+### 1. 端口与服务扫描
+
+使用 **Nmap** 是标准操作，但在 IoT 领域要极其小心。
+
+> **⚠️ 高危警告：脆弱的 IoT 协议栈**
+> 书中特别强调了一个案例：**医疗设备（如心脏起搏器监视器）极其脆弱**。
+> 传统的 Nmap 版本探测（Version Detection）会发送畸形包来诱导服务器回复信息。**这些畸形包会导致很多 IoT 设备的网络栈内存崩溃，导致设备重启甚至变砖。**
+> **原则**：对工业控制系统 (ICS) 和医疗 IoT 设备，**绝对不要**使用激进的扫描模式（如 `nmap -A` 或 `-sV`），除非你在测试环境。
+
+### 2. 操作系统指纹 (OS Fingerprinting)
+
+通过分析 TCP/IP 协议栈的细微差别（如 TTL 值、窗口大小、对 FIN 包的响应），我们可以推断设备跑的是 Linux, VxWorks 还是 Windows XP Embedded。
+
+---
+
+## 三、 流量分析：窃听风云 (Network Traffic Analysis)
+
+这是网络攻击的核心。我们需要捕获并分析设备之间的通信。
+
+### 1. 抓包位置
+
+- **集线器/镜像端口**：如果你有专业的交换机。
+- **ARP 欺骗 (ARP Spoofing)**：在局域网内，欺骗设备说“我是网关”，欺骗网关说“我是设备”，从而成为**中间人 (MITM)**，截获所有流量。
+- **设备本地抓包**：如果你已经通过串口拿到了 Shell（参考上一篇硬件黑客），你可以直接在设备上运行 `tcpdump`。
+  - _难点_：IoT 设备通常是精简版 Linux，没有 `tcpdump`。
+  - _解法_：你需要**交叉编译 (Cross-compile)** 一个静态链接的 `tcpdump` 二进制文件，上传到设备上运行。
+
+### 2. 分析重点
+
+打开 Wireshark，你要找什么？
+
+- **明文协议**：HTTP, Telnet, FTP。如果发现这些，直接提取密码。
+- **脆弱的加密**：WEP Wi-Fi，或者使用了自签名证书且不校验证书的 SSL/TLS（可被 MITM 破解）。
+- **元数据**：即使流量加密了，数据包的大小和频率也会泄露隐私（比如数据包突然变大，说明用户正在看摄像头画面）。
+
+---
+
+## 四、 协议逆向：破解私有语言 (Reverse Engineering Protocols)
+
+这是 IoT 安全最难但也最精彩的部分。很多厂商为了省事或“安全”，会发明自己的**私有协议**，而不是用标准的 HTTP。
+
+### 1. 它是怎么说话的？
+
+通过 Wireshark 抓到的可能是一堆乱码（二进制数据）。你需要猜测：
+
+- 它是基于 TCP 还是 UDP？
+- 它是 XML/JSON 的变体吗？
+- 有没有固定的包头（Header）？比如所有包都以 `0xA5 0x5A` 开头。
+
+### 2. 终极技巧：通过 `strace` 逆向
+
+书中分享了一个**大师级技巧**，专门针对那种难以破解的无线电协议（如心脏起搏器的专有 RF 协议）。
+
+**传统笨办法**：买昂贵的 SDR（软件定义无线电）设备，去分析空气中的无线电波形，做傅里叶变换……这太难了。
+
+**黑客聪明办法**：
+既然设备上有 Linux 系统，为什么不去监听**负责发送无线电的那个进程**呢？
+
+1.  找到负责通信的进程 PID。
+2.  使用 `strace -p PID -e write` 挂载到该进程。
+3.  当进程调用 `write()` 函数向无线电驱动发数据时，你就能直接看到**原始数据**（Payload）。
+4.  这样你就跳过了复杂的无线电物理层分析，直接在系统层截获了数据。
+
+> **"Don't fight the radio, fight the driver." (不要和无线电波较劲，去搞定驱动程序。)**
+
+---
+
+## 五、 无线协议测试 (Wireless Protocol Testing)
+
+除了 Wi-Fi，IoT 设备还大量使用蓝牙 (BLE), Zigbee, RFID, NFC 等短距协议。
+
+### 1. 感知层 (Perception Layer)
+
+- **RFID/NFC**：门禁卡、支付标签。
+  - _攻击_：重放攻击（录制开门信号再播放）、卡片克隆。
+- **GPS**：位置欺骗。
+
+### 2. Wi-Fi 攻击
+
+- **WEP**：古老的加密，几分钟就能破解。如果 IoT 设备还在用 WEP，这就是高危漏洞。
+- **WPA2 弱密码**：很多设备出厂默认 Wi-Fi 密码很简单，可以通过抓取握手包跑字典破解。
+- **WPA3**：虽然更安全，但正在成为新的研究热点。
+
+### 3. 工具箱
+
+要测试这些，你需要特殊的硬件：
+
+- **Wi-Fi**：支持监听模式 (Monitor Mode) 的网卡（如 Atheros 芯片）。
+- **蓝牙**：Ubertooth One。
+- **全频段**：HackRF 或 LimeSDR（软件定义无线电）。
+
+---
+
+## 总结：网络层的攻击链
+
+通过本章，我们建立了一套网络层攻击的标准流程：
+
+1.  **侦察**：用 ARP 和 mDNS 找出所有设备，画出拓扑图。
+2.  **扫描**：小心翼翼地用 Nmap 探测端口，**避免搞崩设备**。
+3.  **监听**：用 Wireshark 抓包，或者搞个静态 `tcpdump` 扔到设备上。
+4.  **逆向**：遇到私有协议别头大，尝试用 `strace` 跟踪系统调用。
+5.  **利用**：编写 Python 脚本，伪造数据包，发送给设备，看它会不会执行命令或崩溃。
+
+现在，你的工具箱里不仅有螺丝刀（硬件），还有了听诊器（Wireshark）和手术刀（Scapy）。下一章，我们将整合所有知识，搭建一个终极 **IoT 黑客实验室**。
+
+```python
+# 一个简单的 Python 脚本，用于通过 UDP 发送测试 Payload
+# 这是协议逆向后的常见利用步骤：重放或模糊测试 (Fuzzing)
+
+import socket
+
+def send_custom_packet(ip, port, payload):
+    print(f"[*] Sending malicious payload to {ip}:{port}")
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) # UDP
+    try:
+        sock.sendto(payload, (ip, port))
+        response = sock.recv(1024)
+        print(f"[+] Received: {response.hex()}")
+    except Exception as e:
+        print(f"[-] Error: {e}")
+    finally:
+        sock.close()
+
+# 假设我们在 Wireshark 里抓到了一个魔术指令 0xA55A0001
+target_ip = "192.168.1.105"
+target_port = 8888
+malicious_payload = bytes.fromhex("A55A0001FF")
+
+send_custom_packet(target_ip, target_port, malicious_payload)
+```
