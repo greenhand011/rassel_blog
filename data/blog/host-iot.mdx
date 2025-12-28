@@ -1,0 +1,187 @@
+---
+title: '【后渗透阶段】拿到 Shell 只是开始：IoT 主机配置审计与提权指南'
+date: '2026-12-29'
+tags: ['IoT Security', 'Post-Exploitation', 'Privilege Escalation', 'Linux', 'Host Auditing']
+draft: false
+summary: '《Practical IoT Hacking》第三章终极篇。当你通过 Web 注入或串口拿到了设备的 Shell，游戏结束了吗？不。真正的宝藏藏在文件系统深处。本文带你进行主机配置审计，挖掘加密密钥、提权漏洞和隐藏的后门。'
+---
+
+在之前的章节中，我们通过硬件拆解（UART）或 Web 漏洞（命令注入）成功拿到了设备的访问权限（Shell）。
+
+很多新手黑客会在这个时候开香槟庆祝，觉得“我已经黑进去了”。但在专业的渗透测试中，这仅仅是**中场休息**。
+
+接下来的阶段被称为 **“后渗透” (Post-Exploitation)** 或 **主机配置审查 (Host Configuration Review)**。你需要像法医一样剖析这个系统，从内部寻找更深层次的漏洞。
+
+为什么要做这个？
+
+1.  **提权**：你可能只拿到了一个低权限账号 (`www-data`)，你需要变成 `root`。
+2.  **持久化**：找到系统配置弱点，留下你的后门。
+3.  **横向移动**：在文件系统中找到连接云端或其他设备的密钥。
+
+本篇博客基于《Practical IoT Hacking》第三章的核心内容，教你如何在获得本地访问权限后，把设备“吃干抹净”。
+
+## 一、 用户与密码：钥匙在谁手里？ (User Accounts & Passwords)
+
+进入系统后，第一件事就是查户口。
+
+### 1. 账户审计
+
+IoT 设备通常也是一台精简版的 Linux 服务器。
+
+- **默认账户**：检查 `/etc/passwd`。除了 `root`，还有没有 `support`, `admin`, `service` 这种可疑账户？
+- **密码策略**：IoT 设备很少有强制改密机制。检查是否有账户永不过期？是否有账户密码和用户名一样（例如 `user:user`）？
+
+### 2. 密码强度与哈希
+
+查看 `/etc/shadow` 文件（需要 Root 权限）。这里存储了密码的哈希值。
+
+- **弱加密算法**：如果哈希值以 `$1$` 开头，那是古老的 MD5；如果是 `$des$`，那就是更弱的 DES。现在的显卡一秒钟能跑数十亿次，瞬间破解。
+- **无密码账户**：如果哈希字段是空的或者 `*`，这意味着该账户可能没有密码或被锁定，但也可能是后门。
+
+> **实战技巧**：
+> 把 `/etc/shadow` 里的哈希值复制出来，扔进 **Hashcat** 或 **John the Ripper**。对于 IoT 设备，你会惊讶地发现很多厂商用的密码就是 `123456` 或者厂商的名字。
+
+---
+
+## 二、 权限管理：人人都是 Root？ (Account Privileges)
+
+在传统服务器安全中，我们要遵循“最小权限原则” (Least Privilege)。但在 IoT 世界，这个原则基本被当空气。
+
+### 1. 裸奔的服务
+
+**检查命令**：`ps aux | grep root`
+**现象**：你会发现 Web 服务器（httpd）、数据库、甚至日志服务都在以 **ROOT** 身份运行。
+**后果**：如果你通过 Web 漏洞（如命令注入）进来的，你不需要提权，你直接就是上帝。
+
+### 2. 提权路径 (Privilege Escalation)
+
+如果你不幸只是个普通用户，检查以下几点来提权：
+
+- **SUID 文件**：`find / -perm -4000`。这些文件在执行时会自动获得文件所有者（通常是 root）的权限。如果厂商自己写的工具有 SUID 位且代码写得烂，这就是提权的最佳跳板。
+- **可写脚本**：检查 `/etc/init.d/` 下的启动脚本，普通用户有写权限吗？如果有，写入你的恶意代码，重启设备，你就拥有了 Root 权限。
+
+---
+
+## 三、 补丁水平：穿越回古代 (Patch Levels)
+
+IoT 设备被称为“僵尸”，因为它们的系统时间仿佛停滞了。
+
+### 1. 古老的内核
+
+**检查命令**：`uname -a`
+**现象**：你可能会看到 Linux Kernel 2.6.x 或 3.x。
+**利用**：去 Exploit-DB 搜索这个内核版本。著名的 **Dirty COW (脏牛)** 漏洞几乎通杀所有旧版 Linux IoT 设备。
+
+### 2. 第三方组件
+
+检查 OpenSSL, BusyBox, Bash 的版本。还记得 **Shellshock** (破壳) 漏洞吗？很多 IoT 设备至今都没修。
+对于 Windows 嵌入式设备（如 ATM、医疗仪器），检查是否打了“永恒之蓝” (EternalBlue) 的补丁。没打？那就是勒索软件的温床。
+
+---
+
+## 四、 远程维护：厂商留的后门 (Remote Maintenance)
+
+这是最讽刺的地方：厂商为了“方便修修补补”，给自己留了后门，结果被黑客用了。
+
+### 1. 隐藏的连接
+
+检查网络连接 (`netstat -an`)。有没有长连接一直连向厂商的服务器？
+检查定时任务 (`crontab -l`)。有没有定时脚本在拉取远程指令？
+
+### 2. 硬编码的“支持”账户
+
+很多设备有一个隐藏账户叫 `tech-support` 或 `vendor-service`，密码是硬编码的，专门给技术支持人员远程登录用。这就好比Target超市被黑事件，黑客就是通过空调维修商的远程通道进来的。
+
+---
+
+## 五、 文件系统与数据：遍地黄金 (Filesystem & Encryption)
+
+### 1. 权限配置错误 (Filesystem Access Controls)
+
+**核心问题**：`chmod 777`。
+开发人员为了省事，经常把整个目录设为所有人可读可写。
+**攻击**：检查 Web 目录或配置目录。如果普通用户能修改 PHP/CGI 文件，或者能修改配置文件，我就能植入木马或修改系统行为。
+
+### 2. 数据加密 (Data Encryption)
+
+假设黑客把设备偷走了，焊下闪存芯片读取数据（数据静态加密）。
+
+- **PII/PHI**：设备里存了用户的身份证号、医疗记录吗？是明文存的吗？
+- **密钥存储**：如果数据加密了，密钥在哪里？是不是就明文写在旁边的 `key.txt` 里，或者硬编码在程序二进制文件里？
+
+> **加密的悖论**：如果设备启动时不需要用户输入密码就能自动解密数据，那么密钥一定藏在设备里的某个地方。只要物理接触，就能找到。
+
+---
+
+## 六、 服务器配置错误 (Server Misconfiguration)
+
+除了系统本身，设备上运行的服务也经常配置错误。
+
+- **FTP**：允许匿名登录吗？允许上传文件吗？
+- **数据库**：Redis 或 SQLite 是否监听在 0.0.0.0 且没有密码？
+- **调试服务**：生产环境是否还开着 GDB Server 或 JDWP 调试端口？
+
+---
+
+## 总结：一份主机审计脚本
+
+为了自动化这个过程，我们可以编写一个简单的脚本来快速审计 IoT 设备的主机安全性。
+
+```python
+# Simple IoT Host Auditor (模拟版)
+# 将此脚本上传到设备上运行 (需要 Python 环境，或者用 Shell 重写)
+
+import os
+import subprocess
+
+def run_cmd(cmd):
+    try:
+        return subprocess.check_output(cmd, shell=True).decode()
+    except:
+        return "Error"
+
+def audit():
+    print("=== IoT Host Configuration Review ===\n")
+
+    # 1. 检查当前用户
+    print("[*] Current User:")
+    print(run_cmd("id"))
+
+    # 2. 检查以 Root 运行的进程
+    print("[*] Processes running as Root (Potential targets):")
+    # 过滤掉系统内核进程，只看用户态程序
+    print(run_cmd("ps aux | grep root | grep -v '\[' | head -n 10"))
+
+    # 3. 检查可写的敏感文件 (World Writable)
+    print("[*] World Writable Files in /etc (Dangerous):")
+    print(run_cmd("find /etc -type f -perm -0002 2>/dev/null"))
+
+    # 4. 检查 Shadow 文件权限
+    print("[*] Checking /etc/shadow permissions:")
+    print(run_cmd("ls -l /etc/shadow"))
+
+    # 5. 内核版本
+    print("[*] Kernel Version (Check for exploits):")
+    print(run_cmd("uname -a"))
+
+    # 6. 检查 SSH 密钥
+    print("[*] Searching for SSH private keys:")
+    print(run_cmd("find / -name id_rsa 2>/dev/null"))
+
+if __name__ == "__main__":
+    audit()
+```
+
+### 结语
+
+至此，我们完成了《Practical IoT Hacking》第三章的所有内容。
+
+从**被动侦察**收集情报，到**物理层**拆机拿串口，再到**网络层**分析协议和**Web层**注入攻击，最后进入**主机层**进行后渗透审计。你已经掌握了一套完整的、端到端的 IoT 渗透测试方法论。
+
+这套方法论是你行走江湖的护身符。不管面对的是智能灯泡还是核电站传感器，逻辑永远是一样的：**拆解、分析、寻找薄弱点、利用**。
+
+**下一章预告：** 理论课彻底结束。下一章，我们将介绍如何搭建属于你自己的**IoT 渗透测试实验室**，准备好你的硬件吧！
+
+```
+
+```
