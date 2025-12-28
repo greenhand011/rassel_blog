@@ -1,9 +1,9 @@
 ---
 title: '【硬核干货】不仅要找漏洞，还要给漏洞打分：DREAD 模型与 IoT 常见杀招'
 date: '2025-12-29'
-tags: ['IoT Security', 'Threat Modeling', 'DREAD', 'Notes']
+tags: ['IoT Security']
 draft: false
-summary: '《Practical IoT Hacking》第二章终极篇。找到了威胁只是第一步，如何判断哪个漏洞更致命？本文详解 DREAD 评分系统，并盘点信号干扰、重放攻击等 IoT 领域的“常见杀招”。'
+summary: '找到了威胁只是第一步，如何判断哪个漏洞更致命？本文详解 DREAD 评分系统，并盘点信号干扰、重放攻击等 IoT 领域的“常见杀招”。'
 ---
 
 在上一篇文章中，我们利用 **STRIDE** 模型和**攻击树**把医疗输液泵扒了个底朝天，找出了几十个潜在的威胁。
@@ -67,7 +67,7 @@ calculate_dread("Weak PIN Authentication", 5, 10, 10, 5, 10)
 
 ## 二、 换个角度看世界：其他的建模流派
 
-虽然本书主要使用“以软件为中心”的 STRIDE，但作为安全专家，你得知道还有其他流派：
+虽然本文主要使用“以软件为中心”的 STRIDE，但作为安全专家，你得知道还有其他流派：
 
 ### 1. 以资产为中心 (Asset-Centric)
 

@@ -1,0 +1,182 @@
+---
+title: '【全栈指南】别乱戳！IoT 安全测试的标准姿势（方法论篇）'
+date: '2025-12-28'
+tags: ['IoT Security']
+draft: false
+summary: '面对复杂的物联网生态，乱拳打死老师傅是行不通的。本文为你构建一套从物理层到云端的全方位渗透测试方法论。'
+---
+
+在之前的章节中，我们学会了如何给威胁建模。现在，终于到了动真格的时候了——**渗透测试**。
+
+但是，面对一个由心脏起搏器、家庭网关、手机 App 和云端服务器组成的复杂 IoT 生态系统，你要从哪里下手？是先拆螺丝？还是先扫端口？或者先抓包？
+
+如果缺乏一套严谨的方法论，你很可能会像无头苍蝇一样乱撞，错过那些最致命（也最显眼）的漏洞。本章将为你提供一张**全栈作战地图**，把 IoT 攻击面切割成可执行的测试层级。
+
+## 一、 作战地图：全景攻击面
+
+首先，我们要把整个 IoT 生态切分成几个概念层。这张图就是你的“作战指挥图”：
+
+<img
+  src="/static/images/IOT/security_assessment_layers.png"
+  alt="Figure 3-1: The conceptual layers to test in a security assessment"
+  width="700"
+/>
+*(图注：IoT 安全测试的六大领域：被动侦察、物理/硬件层、网络层、Web 应用、移动 App/云端、主机配置。)*
+
+这就好比剥洋葱，我们要一层一层地深入核心。
+
+---
+
+## 二、 第 0 层：被动侦察 (Passive Reconnaissance)
+
+在还没碰到设备之前，真正的黑客就已经开始工作了。这叫 OSINT（开源情报收集）。
+
+### 1. 说明书与文档
+
+不要笑，**阅读说明书 (RTFM)** 是最有效的手段。
+
+- 官方手册通常包含默认密码（`admin/admin`）、架构图，甚至调试接口的引脚定义。
+- **技巧**：使用 Google Dorking，例如 `inurl:pdf "device name"`，可能会搜到未公开的内部文档。
+
+### 2. FCC ID 查询
+
+这是 IoT 领域的“作弊码”。在美国销售的无线设备必须通过 FCC 认证。
+
+- **怎么做**：找到设备背面的 FCC ID，去 `fccid.io` 查询。
+- **你能得到什么**：**高清拆解图**！你甚至不用自己动手拆，就能看清芯片型号、天线位置和工作频率。
+
+<img
+  src="/static/images/IOT/fcc_id_chip.png"
+  alt="Figure 3-2: The FCC ID shown on the RFM95C chip"
+  width="700"
+/>
+*(图注：通过 FCC ID，我们可以在不拆机的情况下提前获知芯片的具体型号和频率信息。)*
+
+### 3. 专利与社交媒体
+
+- **专利**：搜一下厂商的专利，可能会发现其专有通信协议的流程图（如 Medtronic 心脏起搏器的通信流程）。
+- **用户抱怨**：去亚马逊看差评，或者去论坛看用户吐槽。如果有人说“这设备一输入特殊字符就重启”，恭喜你，那可能是一个缓冲区溢出漏洞。
+
+<img
+  src="/static/images/IOT/medtronic_patent_flow.png"
+  alt="Figure 3-3: The flow diagram from the Medtronic patent"
+  width="700"
+/>
+*(图注：专利文件中泄露的通信流程图，直接暴露了攻击路径。)*
+
+---
+
+## 三、 第 1 层：物理/硬件层 (Physical/Hardware Layer)
+
+现在，拿起你的螺丝刀。物理接触通常意味着 `Game Over`。
+
+### 1. 外部接口 (Peripheral Interfaces)
+
+- **USB/SD 卡槽**：它是启动盘吗？插上键盘能操作吗？
+- **Kiosk 逃逸**：很多带屏幕的设备（如 ATM、医疗终端）其实就是跑了个全屏浏览器。试试插个键盘按 `Ctrl+Alt+Del` 或 `Alt+F4`，说不定就退回到 Windows 桌面了。
+
+### 2. 启动环境 (Boot Environment)
+
+- **BIOS/UEFI**：进 BIOS 改启动顺序，插个 U 盘启动自己的 Linux 系统，然后挂载设备硬盘，直接提取哈希密码。
+- **Secure Boot**：检查设备是否开启了安全启动。如果没有，你就可以刷入被你篡改过的恶意系统。
+
+### 3. 调试接口 (Debug Interfaces)
+
+这是硬件黑客的圣杯。厂商开发时为了方便会留下 UART、JTAG 或 SPI 接口。
+
+- **后果**：连上 UART，你可能直接得到一个 Root Shell，完全不需要密码。
+
+### 4. 物理鲁棒性与防篡改
+
+- **故障注入 (Glitching)**：对芯片电压进行微小的干扰，可能导致 CPU 跳过密码验证指令。
+- **电池耗尽攻击**：对于心脏起搏器这种植入设备，如果攻击者能通过无线信号不断唤醒设备，耗尽其电池，就是致命的拒绝服务攻击。
+
+---
+
+## 四、 第 2 层：网络层 (The Network Layer)
+
+这是连接物理世界和数字世界的桥梁。
+
+### 1. 拓扑映射 (Topology Mapping)
+
+你需要画出设备、网关、云端、手机 App 是怎么连在一起的。
+
+<img
+  src="/static/images/IOT/network_topology.png"
+  alt="Figure 3-4: A simple topology diagram of a home network"
+  width="700"
+/>
+*(图注：理清网络拓扑是发现攻击链的前提。)*
+
+### 2. 扫描与指纹识别 (Scanning & Fingerprinting)
+
+- **慎用 Nmap！** 注意，**扫描工业或医疗设备可能会导致它们崩溃**。这些设备的网络栈非常脆弱，经不起高强度的端口扫描。
+- **被动监听**：先用 Wireshark 抓包，安安静静地看，不要急着发包。
+
+### 3. 协议逆向工程
+
+IoT 充满了奇奇怪怪的私有协议。
+
+- **技巧**：如果你不想啃无线电信号，可以尝试在操作系统层面（使用 `strace`）拦截驱动程序和应用之间的通信。这比直接逆向无线电信号要容易得多。
+
+---
+
+## 五、 第 3-5 层：Web、主机与移动云端
+
+这部分和传统的 IT 安全测试类似，但有 IoT 的特色。
+
+### 1. Web 应用 (Web Application)
+
+很多摄像头都有一个 Web 管理页面。
+
+- **输入验证**：IoT 设备的 Web 服务通常也是用 C/C++ 写的简易 Server（如 Boa, uhttpd），很容易出现**内存破坏漏洞**，这比普通的 XSS/SQL 注入更致命，能直接导致远程代码执行 (RCE)。
+
+### 2. 主机配置 (Host Configuration)
+
+如果拿到了 Shell，你要检查：
+
+- **硬编码凭据**：在文件系统里 `grep -r "password"`。
+- **权限过大**：是不是所有服务都以 `root` 运行？（在 IoT 里这太常见了）。
+- **补丁**：这台机器是不是还在跑 10 年前的 Linux 内核？
+
+### 3. 移动 App 与云端
+
+- **API 安全**：手机 App 控制设备通常是通过云端 API 中转的。检查是否存在 IDOR（越权访问），比如把 API 里的 `device_id=100` 改成 `101`，能不能看到别人的摄像头？
+- **硬编码 Key**：反编译 APK，看看 AWS S3 的密钥是不是直接写死在代码里了。
+
+---
+
+## 总结：方法论是你的护身符
+
+IoT 安全测试之所以困难，是因为它跨度太大。从焊接电路板到逆向无线电，再到 Web 渗透，你需要十八般武艺。
+
+本章提供的方法论（Figure 3-1）就是防止你迷路的指南针。
+
+- 不要上来就盲目挖掘。
+- 先做 OSINT，找 FCC ID，看专利。
+- 检查物理接口，尝试简单的 Kiosk 逃逸。
+- 小心翼翼地探测网络，避免搞崩设备。
+- 最后才是深入的代码审计和云端测试。
+
+**下一章预告：** 所有的测试都需要一个趁手的兵器库。下一章，我们将介绍**建立 IoT 黑客实验室**所需的软硬件清单。准备好你的钱包了吗？
+
+```python
+# 一个简单的 IoT 侦察清单脚本
+def iot_recon_checklist():
+    steps = [
+        "[OSINT] 查找 FCC ID (fccid.io)",
+        "[OSINT] 下载用户手册和数据表 (Datasheets)",
+        "[OSINT] 搜索默认密码 (admin/admin, root/1234)",
+        "[Physical] 检查外部 USB/SD 端口",
+        "[Physical] 寻找 UART/JTAG 调试接口",
+        "[Network] Wireshark 被动抓包分析",
+        "[Network] 谨慎的 Nmap 扫描 (避免 -A 强力模式)",
+        "[Web] 检查管理页面的注入漏洞",
+        "[Cloud] 检查 App API 的越权访问"
+    ]
+    print("IoT 安全测试启动清单：")
+    for i, step in enumerate(steps):
+        print(f"{i+1}. {step}")
+
+iot_recon_checklist()
+```
