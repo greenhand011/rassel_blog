@@ -1,0 +1,203 @@
+---
+title: '【Web渗透】IoT 设备的软肋：Web 管理界面全方位攻防指南'
+date: '2026-12-29'
+tags: ['IoT Security']
+draft: false
+summary: 'IoT 设备最显眼的入口往往也是最脆弱的。从默认密码到命令注入，本文教你如何攻破那些由硬件工程师写出来的“粗糙”网页。'
+---
+
+在 IoT 渗透测试中，如果你不想拆机（硬件层），也不想啃晦涩的二进制协议（网络层），那么 **Web 管理界面** 绝对是你的最佳切入点。
+
+**为什么？**
+因为绝大多数 IoT 设备（路由器、摄像头、打印机）都有一个 Web 页面用于配置。
+更重要的是，**这些 Web 应用通常不是专业的 Web 开发人员写的，而是由底层硬件工程师顺手写的。**
+
+这就导致了 IoT 设备的 Web 界面往往充满了 90 年代互联网的低级漏洞：没有输入过滤、没有 CSRF 防护、甚至没有身份验证。
+
+本篇博客基于《Practical IoT Hacking》第三章的 Web 应用评估与主机配置审查部分，带你深挖 IoT 设备的“软肋”。
+
+## 一、 侦察：绘制地图 (Application Mapping)
+
+在攻击之前，你得先知道这个 Web 应用到底有多大，藏了什么东西。
+
+### 1. 爬虫与目录扫描 (Spidering)
+
+不要只看你能点击到的链接。你需要使用工具（如 Burp Suite 的 Spider 或 OWASP ZAP）来爬取所有页面。
+
+- **被动爬取**：你点哪里，代理记录哪里。
+- **主动爬取**：工具自动解析 HTML 和 JavaScript，寻找所有可能的链接。
+
+### 2. 挖掘隐藏入口 (Hidden Content)
+
+这是 IoT 测试中最容易出成果的地方。开发人员经常会留下一些**未公开的调试接口**或**API 端点**。
+
+**实战案例**：
+书作者曾在一个流行的监控摄像头中发现了一个隐藏 URL。虽然主界面需要登录，但这个隐藏 URL 竟然允许**在未认证的情况下直接抓取摄像头当前的画面**。这意味着攻击者可以绕过登录，直接监视用户。
+
+**工具推荐**：
+
+- **DirBuster / Gobuster / Ffuf**：使用字典暴力猜解目录（如 `/admin`, `/debug`, `/test`, `/config.bak`）。
+- **字典选择**：对于 IoT 设备，不要用那种几十万条的通用 Web 字典，要用针对嵌入式设备的字典（包含 `cgi-bin`, `uhttpd` 等关键词）。
+
+---
+
+## 二、 客户端信任：不要相信浏览器 (Client-Side Controls)
+
+很多嵌入式 Web 应用为了省事，把安全检查放在了前端（JavaScript）做。
+
+**典型场景**：
+一个修改密码的页面，前端 JS 检查“新密码必须大于 8 位”。
+**攻击方法**：
+使用 Burp Suite 拦截请求。你会发现，虽然浏览器阻止你提交短密码，但如果你直接通过 Burp 修改数据包发送 `123`，服务器往往会照单全收。
+
+**记住原则**：**所有在客户端（浏览器）发生的事情，黑客都可以篡改。** 无论是隐藏表单字段（Hidden Fields）、Cookie 还是 JS 验证。
+
+---
+
+## 三、 身份验证：那扇破旧的门 (Authentication)
+
+这是 IoT 安全的重灾区。
+
+### 1. 默认凭据 (Default Credentials)
+
+这甚至算不上漏洞，但却是最有效的攻击手段。
+
+- **操作**：拿到设备，先试 `admin/admin`, `root/root`, `admin/12345`, `user/user`。
+- **进阶**：如果没有密码，试试空密码。
+
+### 2. 缺乏暴力破解保护
+
+SaaS 网站通常有“输错 5 次锁定账号”的机制，但 IoT 设备通常没有（因为它们没有复杂的数据库来记录状态）。
+这意味着你可以用 **Burp Intruder** 或 **Hydra** 对着登录框跑上几小时的字典，直到爆破成功。
+
+### 3. 明文传输
+
+检查登录请求是走 HTTP 还是 HTTPS。如果是 HTTP，你是局域网里的中间人，你也就能拿到密码。
+
+### 4. 失败开放 (Fail-Open)
+
+这是一种罕见但有趣的逻辑漏洞。如果通过特殊的手段让认证程序崩溃（比如发送超长字符串），系统重启后会不会为了“可用性”而默认允许登录？或者直接跳过验证？
+
+---
+
+## 四、 输入验证：注入的艺术 (Input Validation)
+
+如果说 Web 是入口，那么**注入漏洞**就是炸开入口的炸药。在 IoT 设备中，最常见、最致命的不是 SQL 注入，而是 **OS 命令注入**。
+
+### 1. 为什么是命令注入？ (Command Injection)
+
+IoT 设备的 Web 后端通常是用 C/C++ 写的 CGI 程序，或者是 Lua/PHP 脚本。为了执行一些系统功能（如 `ping` 网络、设置时间），它们经常直接调用系统 Shell。
+
+**漏洞代码示例 (伪代码)**：
+
+```c
+// 这是一个 Ping 测试功能的后端
+char command[100];
+// 直接把用户输入的 ip 拼接到命令里
+sprintf(command, "ping -c 3 %s", user_input_ip);
+system(command);
+```
+
+**攻击 Payload**：
+如果用户输入的是：`127.0.0.1; cat /etc/shadow`
+系统执行的命令就变成了：
+`ping -c 3 127.0.0.1; cat /etc/shadow`
+
+**后果**：
+攻击者直接拿到了 Root 权限，甚至不需要登录 SSH。这是 IoT 领域排名前三的漏洞类型。
+
+### 2. 其他注入
+
+- **XSS (跨站脚本)**：虽然 IoT 管理页面通常只有管理员自己看，但如果攻击者能诱导管理员点击恶意链接，就能劫持管理员会话。
+- **SQL 注入**：如果设备使用了 SQLite 存储配置，SQL 注入也是可能的。
+
+---
+
+## 五、 逻辑与权限：越权的快乐 (Access Control & Logic Flaws)
+
+### 1. 越权访问 (IDOR / Forced Browsing)
+
+**场景**：
+你登录了一个普通用户账号 `User A`。你发现查看个人信息的 URL 是 `http://device/api/profile?id=100`。
+**攻击**：
+尝试把 `id=100` 改成 `id=101`（管理员的 ID）。如果服务器没有校验“User A 是否有权查看 User 101 的数据”，你就成功实现了**水平越权**。
+
+### 2. 逻辑漏洞
+
+IoT 设备经常有“设置向导”。如果攻击者直接跳过第 1 步（验证旧密码），直接访问第 2 步（设置新密码）的 URL，能不能成功？
+**Force Browsing（强制浏览）** 经常能绕过这些脆弱的流程控制。
+
+---
+
+## 六、 主机配置审查：从内部瓦解 (Host Configuration Review)
+
+假设你通过上面的“命令注入”漏洞拿到了 Shell，或者通过串口连上了终端。现在的视角从 Web 变成了 Host（主机）。你需要检查什么？
+
+### 1. 用户账户 (User Accounts)
+
+- 查看 `/etc/passwd`。有没有多余的后门账户？
+- 查看 `/etc/shadow`。Root 密码是弱哈希（如 DES）吗？有没有没设密码的账户？
+- **密码策略**：有没有账户永不过期？
+
+### 2. 权限最小化 (Least Privilege)
+
+**检查进程**：运行 Web 服务（如 `lighttpd` 或 `boa`）的进程是 `www-data` 用户还是 `root` 用户？
+**现状**：令人震惊的是，绝大多数 IoT 设备的 Web 服务都是以 **Root** 权限运行的。这意味着只要你攻破了 Web，你就攻破了整个系统。
+
+### 3. 补丁水平 (Patch Levels)
+
+查看内核版本 (`uname -a`) 和关键组件（如 `OpenSSL`, `BusyBox`）的版本。
+IoT 设备通常**万年不更新**。你经常能看到 5 年前甚至 10 年前的内核，这意味着你可以直接使用公开的内核提权漏洞（Exploit）来攻击它。
+
+### 4. 文件系统权限
+
+- 普通用户能不能写 `/etc/init.d/` 里的启动脚本？如果能，攻击者可以写入恶意脚本，下次重启就自动运行木马。
+- 敏感数据（如配置文件、密钥）是不是所有人可读（World-readable, `chmod 777`）？
+
+---
+
+## 总结：Web 测试检查清单
+
+对于 IoT 设备，Web 测试的优先级非常高。以下是你的作战清单：
+
+1.  **扫描**：用 DirBuster 扫出所有隐藏目录。
+2.  **爆破**：尝试默认密码和弱口令。
+3.  **注入**：在每一个输入框（尤其是 Ping、Traceroute、时间设置等功能）尝试 `; ls -la` 等命令注入 Payload。
+4.  **越权**：尝试修改 URL 中的 ID 参数。
+5.  **主机审计**：拿到 Shell 后，检查是否所有服务都在裸奔（Root 运行）。
+
+IoT 的 Web 世界虽然简陋，但处处是“惊喜”。别被它简陋的外表骗了，那后面可能藏着通往核心的直通车。
+
+```python
+# 一个简单的脚本，用于验证 IoT 设备是否存在命令注入漏洞
+# 模拟针对 "Ping测试" 接口的攻击
+
+import requests
+
+def check_command_injection(url, ip_param):
+    # 这里的 Payload 尝试在 ping 的同时执行 id 命令
+    payload = "127.0.0.1; id"
+    data = {
+        ip_param: payload
+    }
+
+    try:
+        print(f"[*] Testing {url} with payload: {payload}")
+        response = requests.post(url, data=data, timeout=5)
+
+        # 检查响应中是否包含 'uid='，这是 id 命令的典型输出
+        if "uid=" in response.text and "gid=" in response.text:
+            print("[!!!] VULNERABLE! Command Injection detected.")
+            print(f"Server Response snippet: {response.text[:100]}...")
+        else:
+            print("[-] No obvious injection detected (or blind injection).")
+
+    except Exception as e:
+        print(f"[-] Error: {e}")
+
+# 示例用法
+target_url = "http://192.168.1.105/cgi-bin/network_diag.cgi"
+parameter_name = "destination_ip" # 假设我们通过分析 HTML 知道了参数名
+
+check_command_injection(target_url, parameter_name)
+```
