@@ -1,0 +1,282 @@
+---
+title: 'Android 设备指纹攻防：在 IMEI 被封杀的时代，如何通过 NDK 获取唯一标识？'
+date: '2025-12-29'
+tags: ['Android Security']
+draft: false
+summary: '在 Android 10+ 限制 IMEI 读取的背景下，深入探讨基于 Native 层 (C++) 的设备指纹采集技术。详细演示如何通过 MediaDrm 获取唯一且持久的 Widevine ID，并提供完整的 NDK 项目实战代码。'
+---
+
+## 一、背景：隐私时代的“黑暗森林”
+
+在 Android 开发的早期（Android 10 之前），开发者可以轻松地通过 API 读取设备的 **IMEI**（电话模块 ID）或 **MAC 地址**（网卡 ID）来作为设备的唯一标识。
+
+然而，随着隐私法规的日益严格，现状发生了剧变：
+
+1.  **Android 10+ 限制**：普通 App 无法获取 `READ_PHONE_STATE` 权限，强行读取 IMEI 会抛出异常或返回空值。
+2.  **MAC 地址随机化**：为了防止追踪，现代 Android 设备连接不同 WiFi 时，MAC 地址是随机生成的。
+3.  **Android ID 不稳定**：虽然 `Settings.Secure.ANDROID_ID` 可用，但用户重置出厂设置或签名变更时，它可能会改变。
+
+### 救世主：MediaDrm ID (Widevine ID)
+
+这是目前字节跳动、阿里、数美等大厂风控最常用的核心基石。
+
+- **原理**：Android 手机为了播放 Netflix、爱奇艺等受版权保护的高清视频，底层必须集成 DRM（数字版权管理）模块。谷歌的 DRM 方案名为 **Widevine**。
+- **稳定性**：这个 ID 通常烧录在硬件或受保护的 TrustZone 中。即使卸载 App、甚至部分机型恢复出厂设置，该 ID 依然保持不变。
+- **面试金句**：“我们主要利用 Widevine 的 MediaDrm ID 作为基石，因为它不依赖危险权限，且持久性显著优于 Android ID。”
+
+---
+
+## 二、为什么要下沉到 Native (C++) 层？
+
+想象你的 Android 手机就是一个巨大的饭店。
+
+### 1. Java / Kotlin 层（服务员）
+
+这是平时开发 Activity 的地方。
+
+- **特点**：语言简单，受限制多。老板（Google）规定服务员不能进后厨，不能查客人身份证。
+- **风险**：容易被骗。黑客利用 Xposed/Frida 给服务员“戴上墨镜”（Hook），服务员看到的 IMEI 可能是虚假的。
+
+### 2. Native 层 / C++ 层（后厨大厨）
+
+这是通过 NDK 开发的底层。
+
+- **特点**：直接操作食材（硬件驱动），权力更大。能绕过部分 Java 层的限制（如反射限制）。
+- **优势**：
+  1.  **更底层**：直接调用内核 API (`syscall`) 或读取系统文件。
+  2.  **难 Hook**：Java 层的 Hook 框架对 C++ 无效。黑客必须精通汇编和 Inline Hook 才能修改，攻击成本指数级上升。
+
+因此，**为了对抗 Hook 和模拟器，我们将采集逻辑下沉到 Native 层，利用 `__system_property_get` 等底层 API 获取指纹信息。**
+
+---
+
+## 三、实战：构建 NDK 指纹采集器
+
+### 第一步：创建 NDK 项目
+
+1.  打开 Android Studio，选择 **New Project** -> **Native C++**。
+2.  Name: `MyDeviceFingerprint`。
+3.  Build Configuration Language: 推荐 `Kotlin DSL (build.gradle.kts)`。
+4.  C++ Standard: 选择 `C++ 14` 或 `C++ 17`。
+
+<img
+  src="/static/images/DevicePrinter/creat.png"
+  alt="Android Studio 创建 Native C++ 项目的配置界面"
+  width="700"
+/>
+
+### 第二步：配置 CMake (连接器的桥梁)
+
+CMake 是构建 C++ 代码的关键工具。我们需要修改 `app/src/main/cpp/CMakeLists.txt`，引入 Android 的多媒体库 (`mediandk`) 以便调用 MediaDrm API。
+
+```cmake
+# 1. 声明 CMake 最低版本
+cmake_minimum_required(VERSION 3.22.1)
+
+# 2. 项目名称
+project("deviceiddemo")
+
+# 3. 创建共享库 (native-lib.cpp 编译后生成 libdeviceiddemo.so)
+add_library(${CMAKE_PROJECT_NAME} SHARED
+        native-lib.cpp)
+
+# 4. 查找系统日志库 (为了在 C++ 里打 Log)
+find_library(log-lib log)
+
+# 5. 链接库 (关键步骤！)
+# 将 mediandk (媒体库) 和 log (日志库) 链接到我们的项目中
+target_link_libraries(${CMAKE_PROJECT_NAME}
+        mediandk   # <--- 必须添加这个，否则无法调用 Widevine API
+        ${log-lib})
+```
+
+### 第三步：编写 C++ 核心采集代码
+
+打开 `app/src/main/cpp/native-lib.cpp`。这是核心战场，我们将直接调用底层 API 获取系统属性和 DRM ID。
+
+```cpp
+#include <jni.h>
+#include <string>
+#include <sys/system_properties.h> // 用于读取 ro.product.model 等系统属性
+#include <media/NdkMediaDrm.h>     // 用于读取 Widevine ID
+#include <android/log.h>           // Android 日志工具
+
+// 定义日志标签
+#define TAG "DeviceID_Native"
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
+
+/**
+ * 辅助工具：将二进制数据 (byte[]) 转为 16进制字符串
+ * 例如：{0x0A, 0x1B} -> "0A1B"
+ */
+std::string bytesToHex(const uint8_t* data, size_t len) {
+    if (data == nullptr || len == 0) return "空数据";
+    std::string str(len * 2, ' ');
+    const char hexChars[] = "0123456789ABCDEF";
+    for (size_t i = 0; i < len; ++i) {
+        str[i * 2] = hexChars[(data[i] >> 4) & 0xF];
+        str[i * 2 + 1] = hexChars[data[i] & 0xF];
+    }
+    return str;
+}
+
+/**
+ * 1. C++ 读取系统属性
+ * 相当于在 ADB Shell 中执行 `getprop [key]`
+ * 优势：比 Java 层的 Build.MODEL 更难被 Xposed 简单的 Hook 欺骗
+ */
+std::string getSystemProperty(const char* key) {
+    char value[PROP_VALUE_MAX] = {0};
+    // __system_property_get 是 Bionic Libc 提供的底层 API
+    int len = __system_property_get(key, value);
+    if (len > 0) {
+        return std::string(value);
+    }
+    return "未获取到";
+}
+
+/**
+ * 2. 获取 MediaDrm ID (Widevine) —— 设备指纹的皇冠
+ * 即使重置出厂设置，该 ID 在大部分真机上也不会改变。
+ */
+std::string getWidevineID() {
+    // Widevine 的 UUID (这是 Google 定义的固定值，全球通用)
+    const uint8_t uuid[] = {
+            0xed, 0xef, 0x8b, 0xa9, 0x79, 0xd6, 0x4a, 0xce,
+            0xa3, 0xc8, 0x27, 0xdc, 0xd5, 0x1d, 0x21, 0xed
+    };
+
+    // 检查设备是否支持 Widevine 方案
+    // 模拟器通常不支持 Widevine，或者支持但不返回 ID
+    if (!AMediaDrm_isCryptoSchemeSupported(uuid, nullptr)) {
+        return "失败：当前设备不支持 Widevine DRM (可能是模拟器)";
+    }
+
+    AMediaDrm* drm = AMediaDrm_createByUUID(uuid);
+    if (!drm) return "创建 DRM 实例失败";
+
+    AMediaDrmByteArray byteArray;
+    // 尝试读取底层属性 "deviceUniqueId"
+    if (AMediaDrm_getPropertyByteArray(drm, "deviceUniqueId", &byteArray) == AMEDIA_OK) {
+        std::string result = bytesToHex(byteArray.ptr, byteArray.length);
+        AMediaDrm_release(drm);
+        return result;
+    } else {
+        AMediaDrm_release(drm);
+        return "获取 ID 失败 (权限受限或模拟器限制)";
+    }
+}
+
+/**
+ * 3. JNI 接口：Java 调用此函数
+ * 对应 Java 类名：com.example.deviceiddemo.MainActivity
+ * 方法名：getFingerprintFromNative
+ */
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_example_deviceiddemo_MainActivity_getFingerprintFromNative(
+        JNIEnv* env,
+        jobject /* this */) {
+
+    // --- 开始底层采集 ---
+
+    // 1. 机型 (Model)
+    std::string model = getSystemProperty("ro.product.model");
+
+    // 2. 厂商 (Manufacturer)
+    std::string manufacturer = getSystemProperty("ro.product.manufacturer");
+
+    // 3. 序列号 (Serial No) - 模拟器通常会暴露这个特征
+    std::string serial = getSystemProperty("ro.serialno");
+
+    // 4. DRM ID (核心特征)
+    std::string drmId = getWidevineID();
+
+    // --- 拼接结果字符串 ---
+    std::string result = "=== C++ 底层采集结果 ===\n\n";
+    result += "【机型】: " + model + "\n";
+    result += "【厂商】: " + manufacturer + "\n";
+    result += "【序列号(Serial)】: " + serial + "\n\n";
+    result += "【MediaDrm ID】:\n" + drmId + "\n\n";
+
+    // 简单的环境风险判断
+    if(drmId.find("失败") != std::string::npos) {
+        result += ">>> ⚠️ 警告：检测到 MediaDrm 异常，当前环境极可能是【模拟器】或【Root设备】。";
+    } else {
+        result += ">>> ✅ 提示：获取成功，这是一台支持 DRM 的真机设备。";
+    }
+
+    // 将 C++ string 转为 Java String 返回
+    return env->NewStringUTF(result.c_str());
+}
+```
+
+### 第四步：Java 层调用 (MainActivity)
+
+修改 `MainActivity.kt`，加载 so 库并调用 Native 方法显示结果。
+
+```kotlin
+package com.example.deviceiddemo
+
+import androidx.appcompat.app.AppCompatActivity
+import android.os.Bundle
+import android.widget.TextView
+import android.graphics.Color
+import android.graphics.Typeface
+
+class MainActivity : AppCompatActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        // 动态创建一个 TextView 来显示结果，模拟黑客终端风格
+        val textView = TextView(this)
+        textView.textSize = 16f
+        textView.setTextColor(Color.BLACK)
+        textView.setPadding(50, 50, 50, 50)
+        // 使用等宽字体，方便查看对齐的 ID
+        textView.typeface = Typeface.MONOSPACE
+
+        // 关键调用：获取 C++ 层返回的指纹信息
+        textView.text = getFingerprintFromNative()
+
+        setContentView(textView)
+    }
+
+    /**
+     * 声明 native 方法
+     * 这个方法没有方法体，具体的实现由底层的 C++ 代码提供
+     */
+    external fun getFingerprintFromNative(): String
+
+    companion object {
+        // App 启动时加载名为 "deviceiddemo" 的 so 库
+        init {
+            System.loadLibrary("deviceiddemo")
+        }
+    }
+}
+```
+
+---
+
+## 四、运行结果与分析
+
+启动模拟器（如雷电模拟器 9），运行 App。
+
+### 预期结果
+
+你将在屏幕上看到如下信息：
+
+<img
+  src="/static/images/DevicePrinter/result.png"
+  alt="App 运行结果截图，显示了通过 C++ 获取的机型、厂商、序列号以及 MediaDrm ID"
+  width="700"
+/>
+
+### 关键点解读
+
+1.  **ro.serialno**: 雷电模拟器通常会返回类似 `123456789ABC` 这种非常规的序列号，这是识别模拟器的重要特征。
+2.  **MediaDrm ID**:
+    - **在真机上**：你会看到一串长长的 16 进制字符串，这就是这台手机的“身份证”。
+    - **在模拟器上**：通常会显示“失败”或不支持。因为 Widevine DRM 需要底层硬件或 TrustZone 支持，大部分通用模拟器无法完美模拟这一特性。
+
+通过这种方式，我们不仅获取了唯一的设备 ID，还顺便实现了一个简易的“真机/模拟器”检测功能。
