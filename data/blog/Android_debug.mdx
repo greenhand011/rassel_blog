@@ -1,0 +1,216 @@
+---
+title: 'Android 逆向实战：使用 Android Studio 动态调试 Smali 代码'
+date: '2025-12-30'
+tags: ['Android Reverse']
+draft: false
+summary: '静态分析看不懂逻辑？本文手把手教你如何将 APK 反编译为 Smali，并导入 Android Studio 进行动态调试。通过“上帝视角”实时查看寄存器值的变化，精准定位关键破解点。'
+---
+
+## 前言：为什么需要动态调试？
+
+在 Android 逆向中，我们通常先进行**静态分析**（看代码）。但有时候逻辑过于复杂，或者变量经过了层层加密混淆，光看代码很难推断出最终的运行结果。
+
+这时候，我们需要**动态调试**。
+这就好比你是电影导演，可以随时喊“咔”，让演员（App）停在某一帧，然后走过去翻看演员口袋里的道具（查看寄存器 `v0`, `v1` 中的真实数据），比如解密后的密码、Token 等。
+
+本文将详细介绍如何使用 **Android Studio + Smalidea** 插件来实现这一过程。
+
+---
+
+## 第一阶段：反编译与资源准备
+
+在开始调试之前，我们需要将 APK “翻译”成 Android Studio 能识别的 Smali 代码项目。
+
+### 1. 使用 AndroidKiller 提取 Smali
+
+首先，将目标 APK 拖入 **AndroidKiller** 进行反编译。
+反编译完成后，在右侧的“工程管理器”中，找到 `smali` 目录，点击右键 -> 选择 **“打开方式”** -> **“打开文件路径”**。
+
+<img
+  src="/static/images/dynamic_smali/and.png"
+  alt="AndroidKiller工程管理器界面，右键菜单展示打开文件路径选项"
+  width="700"
+/>
+
+### 2. 构造项目源代码
+
+在电脑硬盘（例如 E 盘）新建一个文件夹，命名为 `jwx02`（或者你的项目名）。
+将上一步打开的文件夹中的 `smali` 文件夹复制出来，粘贴到 `jwx02` 中，并将其重命名为 **`src`**。
+
+> **💡 为什么要改名为 src？**
+> Android Studio 默认将 `src` 识别为源代码目录，这样导入时更符合 IDE 的规范，方便后续配置。
+
+<img
+  src="/static/images/dynamic_smali/copy.png"
+  alt="文件资源管理器视图，展示将smali文件夹复制并重命名为src的过程"
+  width="700"
+/>
+
+---
+
+## 第二阶段：配置 Android Studio (IDE 环境)
+
+Android Studio 原生只懂 Java/Kotlin，不懂 Smali。我们需要给它装个“翻译官”。
+
+### 1. 安装 smalidea 插件
+
+下载插件：[smalidea-0.06.zip](https://bitbucket.org/JesusFreke/smalidea/downloads/smalidea-0.06.zip)
+
+打开 Android Studio：
+
+1.  点击 `File` -> `Settings` -> `Plugins`。
+2.  点击齿轮图标或 `Install Plugin from Disk...`，选择刚才下载的 zip 包进行安装。
+3.  安装完成后重启 Android Studio。
+
+<div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px' }}>
+  <img
+    src="/static/images/dynamic_smali/setting.png"
+    alt="Android Studio 设置菜单，定位到 Plugins 选项"
+    style={{ width: '48%' }}
+  />
+  <img
+    src="/static/images/dynamic_smali/install.png"
+    alt="从本地磁盘选择 smalidea 插件安装包的界面"
+    style={{ width: '48%' }}
+  />
+</div>
+
+### 2. 导入与标记源码
+
+1.  选择 `File` -> `Open` (或 `Import Project`)，选中我们刚才建立的 `jwx02` 文件夹。
+2.  **关键步骤**：导入后，在左侧 Project 面板中，右键点击 `src` 文件夹。
+3.  选择 **`Mark Directory as`** -> **`Sources Root`**。
+
+> **⚠️ 注意**：如果不错这一步，文件夹是灰色的，IDE 不会把它当做代码处理，你也无法在代码行上打断点（变蓝色才是成功的标志）。
+
+<img
+  src="/static/images/dynamic_smali/sourceroot.png"
+  alt="Android Studio 项目视图，右键菜单将文件夹标记为 Sources Root"
+  width="700"
+/>
+
+---
+
+## 第三阶段：启动调试模式 (让 APP 等待)
+
+这一步是让模拟器里的 APP 启动，但停在入口处等待我们的调试器接入。
+
+### 1. 检查 ADB 连接
+
+打开 CMD (命令行)，输入以下命令确保模拟器已连接：
+
+```bash
+adb devices
+```
+
+如果看到类似 `127.0.0.1:62001 device` 的输出，说明连接正常。
+
+<img
+  src="/static/images/dynamic_smali/adb.png"
+  alt="CMD命令行界面，显示 adb devices 命令执行结果"
+  width="700"
+/>
+
+### 2. 以调试模式启动 APP
+
+在 CMD 中输入启动命令。格式为：`adb shell am start -D -n 包名/入口Activity`
+
+**示例命令：**
+
+```bash
+adb shell am start -D -n hfdcxy.com.myapplication/hfdcxy.com.myapplication.MainActivity
+```
+
+**现象**：模拟器会自动打开 APP，屏幕变灰，并弹出一个显示 **"Waiting for Debugger"** 的弹窗。
+**注意**：此时**千万不要**点击模拟器上的 "Force Close"，就让它挂着，这说明它正在乖乖等待我们去连接。
+
+<img
+  src="/static/images/dynamic_smali/waiting.png"
+  alt="模拟器屏幕截图，显示 Waiting For Debugger 对话框"
+  width="700"
+/>
+
+---
+
+## 第四阶段：建立连接 (核心步骤)
+
+这一步是打通电脑端的 Android Studio 和模拟器内部 APP 之间的通道。
+
+### 原理通俗解释
+
+你可以把 Android Studio (AS) 想象成**导演**，模拟器里的 APP 是**演员**。
+没有连接时，你在 AS 代码里画红点（下断点），演员根本不知道，他演他的。
+建立连接后，相当于接通了**对讲机**。AS 告诉模拟器：“喂，跑到第 50 行代码时给我定住！”模拟器收到指令，运行到那里就会瞬间“冻结”，让你检查数据。
+
+### 操作步骤
+
+1.  在 Android Studio 顶部菜单栏，点击 **`Run`**。
+2.  选择 **`Attach Debugger to Android Process`** (图标通常是一个带小虫子的手机)。
+3.  在弹出的窗口中，找到你的模拟器设备，展开后选中目标进程（如 `hfdcxy.com.myapplication`）。
+4.  点击 **OK**。
+
+<div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px' }}>
+  <img
+    src="/static/images/dynamic_smali/step.png"
+    alt="Android Studio Run 菜单，高亮显示 Attach Debugger 选项"
+    style={{ width: '48%' }}
+  />
+  <img
+    src="/static/images/dynamic_smali/step2.png"
+    alt="选择进程窗口，选中目标 APP 进程进行调试"
+    style={{ width: '48%' }}
+  />
+</div>
+
+**成功标志**：
+
+- **模拟器**："Waiting for Debugger" 弹窗消失，APP 恢复正常界面。
+- **Android Studio**：底部的 Console 控制台显示 `Connected to the target VM`。
+
+<img
+  src="/static/images/dynamic_smali/login.png"
+  alt="调试器连接成功后的 Console 控制台输出"
+  width="700"
+/>
+
+---
+
+## 第五阶段：Android Studio 开始调试
+
+一切准备就绪，开始猎杀！
+
+### 1. 下断点 (Breakpoint)
+
+在 AS 中打开你要分析的 Smali 文件（例如 `MainActivity.smali`）。
+寻找关键逻辑，比如 `check` 方法或 `onClick` 点击事件。
+在代码行号右侧的空白处点击，会出现一个**红点**。
+
+<img
+  src="/static/images/dynamic_smali/point.png"
+  alt="Smali 代码编辑器界面，在关键行号处设置红色断点"
+  width="700"
+/>
+
+### 2. 触发断点
+
+回到模拟器，操作 APP 触发该逻辑。例如：在输入框随便输入账号密码，点击“登录”按钮。
+
+<img
+  src="/static/images/dynamic_smali/click.png"
+  alt="模拟器操作演示，点击登录按钮触发事件"
+  width="700"
+/>
+
+### 3. 获取数据
+
+此时，Android Studio 会自动跳到前台，刚才打红点的那一行代码会变成**蓝色背景**，说明程序已经暂停在这里了。
+
+<img
+  src="/static/images/dynamic_smali/as.png"
+  alt="Android Studio 调试界面，程序暂停在断点处，Variables 窗口显示寄存器数值"
+  width="700"
+/>
+
+查看下方的 **Variables** 面板，你可以清晰地看到 Smali 寄存器（`v0`, `v1`, `p0` 等）中当前存储的真实值。
+
+> **🎉 胜利时刻**：你输入的密码、加密前的明文、服务器返回的 Token，此刻都毫无保留地展现在你面前。
