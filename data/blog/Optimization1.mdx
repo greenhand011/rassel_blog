@@ -213,6 +213,8 @@ $$ \mathcal{P} = \{x \mid Ax \le b, Cx = d\} $$
 光说不练假把式。我们使用 Python 中最流行的凸优化库 **CVXPY** 来演示上述概念。
 **问题场景**：给定一个多面体 $P = \{x \mid Ax \le b\}$（凸集）和一个外部点 $y$，我们要找到多面体上距离 $y$ 最近的点。这本质上是一个投影问题。
 
+```python
+
     # 环境准备：pip install cvxpy numpy
     import cvxpy as cp
     import numpy as np
@@ -256,6 +258,7 @@ $$ \mathcal{P} = \{x \mid Ax \le b, Cx = d\} $$
 
     except cp.SolverError:
         print("求解失败")
+```
 
 **代码解析**：
 
