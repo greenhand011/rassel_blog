@@ -60,8 +60,9 @@ print(f"Optimal value: {prob.value:.4f}")
 ### Question 1: 凸组合 (Convex Combination)
 
 **题目**：证明 $k$ 个点的加权平均（权重和为1，且非负）依然在凸集 $C$ 内。
-**解析**：
-这是凸集定义的推广。
+
+<img src="/static/images/Optimization/T1Q1.png" alt="第一题" width="700" />
+**解析**： 这是凸集定义的推广。
 
 - **$k=2$ 时**：直接就是凸集定义，显然成立。
 - **$k > 2$ 时**：使用**数学归纳法**。
@@ -75,6 +76,8 @@ print(f"Optimal value: {prob.value:.4f}")
 ### Question 2: 交集的凸性
 
 **题目**：证明任意多个凸集的交集 $\bigcap C_\alpha$ 依然是凸集。
+
+<img src="/static/images/Optimization/T1Q2.png" alt="第二题" width="700" />
 **解析**：
 
 - **直觉**：两个圆形重叠，中间的杏仁形状也是凸的。
@@ -86,6 +89,8 @@ print(f"Optimal value: {prob.value:.4f}")
 ### Question 3: 直线与凸集
 
 **题目**：证明一个集合是凸集，当且仅当它与任意直线的交集是凸集。
+
+<img src="/static/images/Optimization/T1Q3.png" alt="第三题" width="700" />
 **解析**：
 
 - **$(\Rightarrow)$ 正向**：如果你切西瓜（凸集），切面上的线段（交集）肯定也是直的（凸的）。
@@ -100,6 +105,8 @@ print(f"Optimal value: {prob.value:.4f}")
 ## Part 2: 谁是凸集？ (Question 4)
 
 这道题考察你的**火眼金睛**。判断集合是否为凸，核心秘诀是看它能否由**半空间（线性不等式）**、**球**等基本凸集通过交集等保凸运算得到。
+
+<img src="/static/images/Optimization/T1Q4.png" alt="第四题" width="700" />
 
 **(a) A slab (板状区域): $\{x \mid \alpha \le a^T x \le \beta\}$**
 
@@ -160,8 +167,9 @@ print(f"Optimal value: {prob.value:.4f}")
 ### Question 5: 平行超平面间的距离
 
 **题目**：求 $\{x | a^T x = b_1\}$ 和 $\{x | a^T x = b_2\}$ 的距离。
-**解析**：
-公式大家高中可能背过，这里用向量法推导：
+
+<img src="/static/images/Optimization/T1Q5.png" alt="第五题" width="700" />
+**解析**： 公式大家高中可能背过，这里用向量法推导：
 
 1.  在平面 1 上任取一点 $x_1$。
 2.  点 $x_1$ 到平面 2 的距离公式为 $d = \frac{|a^T x_1 - b_2|}{\|a\|_2}$。
@@ -169,6 +177,8 @@ print(f"Optimal value: {prob.value:.4f}")
     $$ \text{Distance} = \frac{|b_1 - b_2|}{\|a\|\_2} $$
 
 ### Question 6: 谁是多面体 (Polyhedra)?
+
+<img src="/static/images/Optimization/T1Q6.png" alt="第六题" width="700" />
 
 **多面体定义**：有限个线性等式和不等式的解集 $\{x \mid Ax \le b, Fx = g\}$。
 _换句话说，边界必须是平直的，不能是弯曲的。_
@@ -201,6 +211,8 @@ _换句话说，边界必须是平直的，不能是弯曲的。_
 ## Part 4: 二次不等式的凸性 (Question 7)
 
 **题目**：$C = \{x \mid x^T A x + b^T x + c \le 0\}$。
+
+<img src="/static/images/Optimization/T1Q7.png" alt="第7题" width="700" />
 
 **(a) 证明若 $A \succeq 0$ (半正定)，则 $C$ 是凸集。**
 
