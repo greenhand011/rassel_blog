@@ -1,0 +1,277 @@
+---
+title: '凸优化数学基石：从向量空间到几何分离定理（CityU CS 课程深度笔记）'
+date: '2025-02-10'
+tags: ['Optimization']
+draft: false
+summary: '本文深入浅出地拆解凸优化的数学基础。从向量空间与欧几里得范数起步，图文并茂地详解凸集的核心概念、保凸运算及分离超平面定理，并配合 CVXPY 代码实战，带你从几何直觉跨越到算法实现。'
+---
+
+> **写在前面**
+>
+> 很多人提到“人工智能”或“机器学习”，首先想到的是 PyTorch、TensorFlow 或者是各种复杂的网络架构。但如果我们剥开这些框架的外衣，其最底层的数学内核往往指向同一个领域——**优化（Optimization）**。
+>
+> 无论是训练神经网络时的梯度下降，还是支持向量机（SVM）寻找最大间隔，亦或是控制系统中的线性矩阵不等式，本质上都是在求解一个优化问题。
+>
+> 我们将从最基础的向量空间出发，构建起“凸集”的几何大厦，这是判断一个问题“是否好解”的黄金标准。
+
+## 0. 优化问题的“标准像”
+
+在深入数学细节之前，我们需要知道我们在解决什么问题。一个通用的优化问题通常写成如下形式：
+
+$$
+\begin{aligned}
+& \min & & f(x) \\
+& \text{s.t.} & & x \in \Omega
+\end{aligned}
+$$
+
+- $f(x)$：**目标函数**（Objective Function），例如损失函数。
+- $\Omega$：**可行域**（Feasible Set），即变量 $x$ 必须满足的所有约束条件的集合。
+
+<img
+  src="/static/images/Optimization/standard-form-p8.png"
+  alt="优化问题的标准数学形式，展示最小化f(x)且x属于Omega"
+  width="700"
+/>
+
+如果 $f(x)$ 是凸函数，且 $\Omega$ 是凸集，那么这就是一个**凸优化问题**。它最迷人的性质在于：**局部最优解即为全局最优解**。
+
+---
+
+## 1. 舞台搭建：向量空间与欧几里得空间
+
+要讨论几何，我们首先需要定义“空间”。
+
+### 1.1 向量空间 (Vector Space)
+
+简单来说，向量空间 $V$ 是一个集合，集合内的对象（向量）可以进行**加法**和**数乘**运算，并且满足封闭性（即运算结果仍在集合内）。
+
+- 比如我们熟悉的二维平面 $\mathbb{R}^2$，或者多项式函数的集合。
+
+### 1.2 欧几里得空间 (Finite-Dimensional Euclidean Space)
+
+光有加减法是不够的，在优化中，我们经常需要衡量两个向量“离得有多近”（距离）或者“方向是否一致”（夹角）。因此，我们在向量空间中引入了**内积（Inner Product）** $\langle \cdot, \cdot \rangle$。
+
+有了内积，就自然诱导出了**范数（Norm）**，也就是向量的长度：
+$$ \|x\| = \sqrt{\langle x, x \rangle} $$
+
+**两个极其重要的空间例子：**
+
+1.  **$\mathbb{R}^n$（$n$ 维实向量空间）**
+    - 这是最常见的空间。
+    - **内积定义**：$\langle x, y \rangle = x^T y = \sum_{i=1}^n x_i y_i$。
+
+2.  **$\mathbb{S}^n$（$n \times n$ 对称矩阵空间）**
+    - **为什么它很重要？** 在优化理论中（特别是半正定规划 SDP），变量往往不是一个向量，而是一个矩阵。
+    - **内积定义**：$\langle A, B \rangle = \text{tr}(AB) = \sum_{i,j} A_{ij} B_{ij}$。这本质上是将矩阵拉直成向量后的点积。
+
+---
+
+## 2. 核心主角：凸集 (Convex Sets)
+
+这是本章的绝对核心。理解了“凸集”，你就理解了凸几何的一半。
+
+### 2.1 直观定义：橡皮筋测试
+
+什么是“凸”？想象你在一个集合内部任意取两个点 $x_1$ 和 $x_2$，用一条橡皮筋（线段）把它们连起来。
+
+- **凸集**：这条橡皮筋上的**每一个点**都在集合内部。
+- **非凸集**：橡皮筋的一部分跑到了集合外面（比如甜甜圈形状、月牙形）。
+
+<img
+  src="/static/images/Optimization/convex-vs-nonconvex-p13.png"
+  alt="左侧六边形为凸集，中间腰子形和右侧正方形缺口均为非凸集"
+  width="700"
+/>
+
+### 2.2 数学定义
+
+集合 $C$ 被称为凸集，当且仅当对于任意 $x_1, x_2 \in C$ 和任意 $0 \le \theta \le 1$，都有：
+$$ \theta x_1 + (1-\theta)x_2 \in C $$
+
+### 2.3 衍生概念：凸包与凸锥
+
+- **凸包 (Convex Hull)**：包含一组点 $S$ 的**最小**凸集。想象墙上钉了一堆钉子，用一根有弹性的绳子把它们圈起来，绳子内部的区域就是凸包。
+- **凸锥 (Convex Cone)**：如果一个集合既是凸集，又是锥（即从原点出发的射线都在集合内），它就是凸锥。
+  - 数学表达：对任意 $x \in C, \theta \ge 0 \implies \theta x \in C$。
+
+---
+
+## 3. 常见凸集大赏 (Building Blocks)
+
+我们在实际建模（如线性规划、二次规划）时，约束条件通常由以下几种基本几何体构成。
+
+### 3.1 超平面 (Hyperplane) 与 半空间 (Halfspace)
+
+这是最基本的“切割工具”，也是线性代数在几何上的直接体现。
+
+- **超平面**：$\{x \mid a^T x = b\}$。
+  - 在二维是直线，三维是平面。它是凸集（也是仿射集）。
+- **半空间**：$\{x \mid a^T x \le b\}$。
+  - 被超平面切开的某一侧空间。**它是凸集**。
+  - **应用**：线性规划中的每一个约束 $a_i^T x \le b_i$ 其实都定义了一个半空间。
+
+<img
+  src="/static/images/Optimization/hyperplane-halfspace-p16.png"
+  alt="超平面法向量a与半空间几何示意图"
+  width="700"
+/>
+
+### 3.2 多面体 (Polyhedra)
+
+多面体是有限个线性等式和不等式的解集：
+$$ \mathcal{P} = \{x \mid Ax \le b, Cx = d\} $$
+
+- **几何理解**：它是有限个半空间（$Ax \le b$）和超平面（$Cx=d$）的**交集**。
+- 因为半空间和超平面都是凸的，且凸集的交集还是凸集，所以**多面体一定是凸集**。
+
+<img
+  src="/static/images/Optimization/polyhedron-p19.png"
+  alt="多面体作为半空间交集的几何示意图"
+  width="700"
+/>
+
+### 3.3 半正定锥 (Positive Semidefinite Cone, $\mathbb{S}^n_+$)
+
+这是现代控制理论和高级推荐系统中的常客。
+
+- **定义**：所有半正定对称矩阵构成的集合。
+  $$ \mathbb{S}^n\_+ = \{X \in \mathbb{S}^n \mid z^T X z \ge 0, \forall z\} $$
+- 虽然它看起来很抽象，但它是一个**凸锥**。
+- **可视化**：在 $2 \times 2$ 对称矩阵空间中，它看起来像一个圆锥体（Ice Cream Cone）。
+
+<img
+  src="/static/images/Optimization/psd-cone-p20.png"
+  alt="二阶半正定锥的三维可视化图"
+  width="700"
+/>
+
+---
+
+## 4. 如何证明一个集合是凸的？(保凸运算)
+
+在面对复杂的实际问题时，直接用定义证明凸性通常很繁琐。我们更常用**“搭积木”**的方法：利用已知凸集通过**保凸运算**构建新集合。
+
+如果 $S$ 是凸集，以下操作后的结果依然是凸集：
+
+### 4.1 交集 (Intersection)
+
+**任意个**（哪怕是无穷多个）凸集的交集依然是凸集。
+
+- **例子**：$S = \{x \in \mathbb{R}^m \mid |p(t)| \le 1, |t| \le \pi/3\}$。
+- 这里每一个 $t$ 对应一个约束（slab），整个集合是无穷多条带状区域的交集，因此是凸的。
+
+<img
+  src="/static/images/Optimization/intersection-slabs-p23.png"
+  alt="无穷多凸集交集的示意图"
+  width="700"
+/>
+
+### 4.2 仿射变换 (Affine Mapping)
+
+令 $f(x) = Ax + b$。
+
+- 凸集经过线性变换后（拉伸、旋转、平移），像 $f(S)$ 依然是凸的。
+- 凸集经过线性变换的逆映射，原像 $f^{-1}(C)$ 依然是凸的。
+- **应用**：椭球可以看作是单位球（凸集）经过仿射变换得到的，所以椭球一定是凸集。
+
+---
+
+## 5. 凸优化的理论基石：分离定理
+
+这一部分是 SVM（支持向量机）等算法的数学灵魂。
+
+### 5.1 分离超平面定理 (Separating Hyperplane Theorem)
+
+**定理**：如果 $C$ 和 $D$ 是两个不相交的凸集，那么一定存在一个超平面能把它们完全隔开。
+
+- 数学语言：存在 $a \ne 0, b$，使得 $a^T x \le b$ ($\forall x \in C$) 且 $a^T x \ge b$ ($\forall x \in D$)。
+- **直觉**：只要两个凸形物体没撞上，中间一定能插进一张纸。
+
+<img
+  src="/static/images/Optimization/separating-hyperplane-p32.png"
+  alt="两个不相交凸集被超平面分离的示意图"
+  width="700"
+/>
+
+### 5.2 支撑超平面定理 (Supporting Hyperplane Theorem)
+
+**定理**：对于凸集边界上的任意一点 $x_0$，都存在一个通过该点的超平面，使得整个凸集都在这个平面的同一侧。
+
+- 这解释了为什么凸优化问题在边界取得极值时，梯度方向也是确定的。
+
+<img
+  src="/static/images/Optimization/supporting-hyperplane-p36.png"
+  alt="凸集边界点的支撑超平面示意图"
+  width="700"
+/>
+
+---
+
+## 6. Python 代码实战：多面体投影
+
+光说不练假把式。我们使用 Python 中最流行的凸优化库 **CVXPY** 来演示上述概念。
+**问题场景**：给定一个多面体 $P = \{x \mid Ax \le b\}$（凸集）和一个外部点 $y$，我们要找到多面体上距离 $y$ 最近的点。这本质上是一个投影问题。
+
+    # 环境准备：pip install cvxpy numpy
+    import cvxpy as cp
+    import numpy as np
+
+    # 1. 生成数据
+    # m 是约束数量，n 是维度
+    m = 10
+    n = 5
+    np.random.seed(1)
+    A = np.random.randn(m, n)
+    b = np.random.randn(m)
+
+    # 2. 定义外部点 y (假设它不在多面体内)
+    y = np.random.randn(n) * 5
+
+    # 3. 构建凸优化问题
+    # 变量：我们要求的投影点 x
+    x = cp.Variable(n)
+
+    # 目标：最小化 x 和 y 之间的欧氏距离（等价于最小化平方和）
+    # sum_squares 是凸函数
+    cost = cp.sum_squares(x - y)
+    objective = cp.Minimize(cost)
+
+    # 约束：x 必须在多面体 P 内 (Ax <= b)
+    # 半空间的交集，这是凸约束
+    constraints = [A @ x <= b]
+
+    # 4. 求解
+    prob = cp.Problem(objective, constraints)
+    try:
+        prob.solve()
+
+        print(f"优化状态: {prob.status}")
+        print(f"最优值 (距离平方): {prob.value:.4f}")
+        print(f"投影点 x 的坐标:\n{x.value}")
+
+        # 验证约束满足情况
+        max_violation = np.max(A @ x.value - b)
+        print(f"约束最大违背值 (应 <= 0): {max_violation:.4e}")
+
+    except cp.SolverError:
+        print("求解失败")
+
+**代码解析**：
+
+1.  **凸集定义**：代码中的 `constraints = [A @ x <= b]` 直接对应了我们在数学部分讲的**多面体**（半空间的交集）。
+2.  **凸函数**：`cp.sum_squares` 是一个典型的凸函数。
+3.  **求解**：`prob.solve()` 内部会自动调用求解器（如 OSQP 或 SCS），利用我们提到的几何性质（如梯度、KKT条件）快速找到全局最优解。
+
+---
+
+## 总结
+
+这一讲我们完成了从线性代数到凸几何的跨越：
+
+1.  理解了**凸集**的定义：线段测试。
+2.  掌握了构建凸集的**基本积木**：超平面、半空间、多面体。
+3.  学会了**保凸运算**来分析复杂集合。
+4.  见识了**分离超平面定理**，它是 SVM 等分类算法的基石。
+
+下一篇博客，我们将从“集合”迈向“函数”，探讨**凸函数（Convex Functions）**的性质，那是从几何直觉通往算法实战的最后一块拼图。
