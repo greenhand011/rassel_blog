@@ -20,17 +20,14 @@ export default function Footer() {
           <SocialIcon kind="medium" href={siteMetadata.medium} size={6} />
         </div>
 
-        {/* 2. Star 按钮 (使用 iframe 方式，兼容性最好) */}
+        {/* 2. Star 按钮 (最终方案：使用 Shields.io 图片，最稳定) */}
         <div className="mb-3 flex space-x-4">
-          <iframe
-            src="https://ghbtns.com/github-btn.html?user=greenhand011&repo=rassel_blog&type=star&count=true&size=large"
-            frameBorder="0"
-            scrolling="0"
-            width="170"
-            height="30"
-            title="GitHub"
-            style={{ border: 0 }}
-          ></iframe>
+          <a target="_blank" rel="noopener noreferrer" href="https://github.com/greenhand011/rassel_blog">
+            <img 
+              src="https://img.shields.io/github/stars/greenhand011/rassel_blog?style=social" 
+              alt="GitHub stars" 
+            />
+          </a>
         </div>
         {/* Star 按钮结束 */}
 
