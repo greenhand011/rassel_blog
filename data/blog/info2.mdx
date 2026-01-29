@@ -1,155 +1,169 @@
 ---
-title: '信息安全前沿：从 CIA 基石到自适应分布式安全系统（CS 5293 深度解析）'
-date: '2026-01-27'
-tags: ['web Security']
+title: '密码学实战：从原理到 OpenSSL 指令详解 AES 加密模式的安全差异'
+date: '2026-01-29'
+tags: ['web security']
 draft: false
-summary: '安全三元组、拜占庭容错共识算法（BFT）的底层逻辑，以及如何利用强化学习解决分布式系统中“无银弹”的性能瓶颈。'
+summary: '为什么只有开头不同的两段话，加密后有的完全不同，有的却保留了相似性？本文深入剖析 ECB、CBC、CTR 模式的数学原理，并结合 SEED Ubuntu 实验室环境，手把手教你使用 OpenSSL 验证加密模式的扩散性与安全性。'
 ---
 
-# 信息安全前沿：开启你的安全专家之旅
+# 密码学实验室：探究 AES 工作模式的安全边界
 
-## 这篇博客将带你深度复盘Information Security的开篇内容。这不仅是介绍，更是一次从经典安全理论到分布式系统最前沿研究（State-of-the-art）的跨越。
+在现代网络安全中，选择一种强大的加密算法（如 AES）只是成功的一半。如何“使用”这种算法——即选择哪种**工作模式（Mode of Operation）**——往往决定了系统的真实安全强度。
 
-## 第一部分：生存指南（Logistics & Assessment）
-
-### 1. 学习资源
-
-- **SEED Labs**：这是实战核心。你需要安装 **VirtualBox** 并配置特定的 Ubuntu 环境。
-- **参考书目**：涵盖了从基础计算机安全到高级密码学工程的经典教材。
-
-<img
-  src="/static/images/course/virtualbox-setup.png"
-  alt="Oracle VM VirtualBox 环境配置预览"
-  width="600"
-/>
+今天我们将深入探讨 **Scenario 1**：当两个明文消息只有第一个块不同时，不同的加密模式会产生怎样的连锁反应？
 
 ---
 
-## 第二部分：安全哲学——定义的演变
+## 1. 理论先行：块加密模式的数学逻辑
 
-什么是安全？**安全性永远是相对的**。它取决于：
+假设我们有两组明文：
 
-1. **期望的属性集**（你想要保护什么？）。
-2. **具体的对手能力**（你的对手是普通脚本小子还是国家级黑客？）。
+- $M_1 = m_1 || m_2 || \dots || m_n$
+- $M_2 = m'_1 || m_2 || \dots || m_n$
+  （注：$m_1 \neq m'_1$，但后续的所有 $m_2 \dots m_n$ 完全相同）
 
-### 1. 经典 CIA 三元组
+### Q1: ECB (Electronic Codebook) 模式
 
-这是安全界的红线，任何系统的崩溃通常都源于这三点的失守：
-
-- **机密性 (Confidentiality)**：**防止未经授权的披露**。
-  - _核心工具_：加密（AES/RSA）、物理隔离、细粒度的权限控制（Authentication & Authorization）。
-- **完整性 (Integrity)**：**防止未经授权的修改**。
-  - _深度解析_：单纯的加密无法保证完整性。攻击者可以拦截密文并翻转比特位（Bit-flipping）。
-  - _核心工具_：哈希校验（Checksums）、数字签名、纠错码。
-- **可用性 (Avcourselability)**：**确保授权用户能及时访问**。
-  - _核心工具_：冗余设计、DDoS 防护、灾备中心（Recovery centers）。
-
-### 2. 进阶 A.A.A 概念
-
-随着分布式系统的兴起，CIA 已不足以描述全部：
-
-- **真实性 (Authenticity)**：确保信息的来源和声明是真实的。
-- **匿名性 (Anonymity)**：确保记录/交易无法追溯到特定个人（工具：混合网络、假名、代理）。
-- **保证 (Assurance)**：系统如何管理和维持“信任”。
-
----
-
-## 第三部分：分布式系统的安全挑战——从“崩溃”到“拜占庭”
-
-这是本课程最硬核的理论部分：当一个系统由成百上千台服务器组成时，我们如何达成共识？
-
-### 1. 故障模型对比
-
-- **Crash Fcourselure (宕机故障)**：节点只是停止响应，不会发送错误消息。
-  - **算法逻辑**：(Multi-)Paxos。
-  - **容错极限**：在 `2f + 1` 个节点中，最多容忍 `f` 个节点宕机。
-- **Byzantine Fcourselure (拜占庭故障)**：节点可能表现出**任意行为**，包括发送伪造消息、前后矛盾、甚至恶意勾结。
-  - **算法逻辑**：PBFT (Practical Byzantine Fault Tolerance)。
-  - **容错极限**：在 `3f + 1` 个节点中，最多容忍 `f` 个恶意节点。
-
-**为什么是 3f+1？**
-简单逻辑推导：如果有 $f$ 个坏人，你必须能区分“没回消息的坏人”和“回了假消息的坏人”。为了确保诚实节点（Majority）总能压倒坏人，且在有人宕机的情况下仍能运行，数学证明至少需要 $3f+1$ 个节点。
+**原理：** 每个明文块独立加密，公式为 $C_i = E_K(m_i)$。
+**分析：** 因为加密过程不考虑上下文，相同的明文块 $m_2$ 在两组密文中都会生成相同的 $C_2$。
+**结论：** Q1 错误。密文块会大量重复，泄露了明文的结构信息。
 
 <img
-  src="/static/images/course/byzantine-fcourselure.png"
-  alt="拜占庭故障模型：节点发送前后矛盾的消息"
-  width="700"
-/>
-<img
-  src="/static/images/course/byzantine-fcourselure1.png"
-  alt="拜占庭故障模型：节点发送前后矛盾的消息"
+  src="/static/images/course/theory-ecb-parallel.png"
+  alt="ECB 模式原理图：块与块之间互不干扰"
   width="700"
 />
 
----
+### Q2: CBC (Cipher Block Chaining) 模式
 
-## 第四部分：前沿研究——AdaChcoursen（让区块链学会自适应）
-
-在现实世界中，共识协议存在“不可能三角”：**没有一个协议能在所有工作负载下都表现完美**。
-
-### 1. 现有的挑战
-
-- **共识协议泛滥**：从 2000 年的 PBFT（实用拜占庭容错） 到现在的 HotStuff, Mysticeti，成百上千。
-- **环境多变**：网络延迟波动、交易请求突增、硬件异构（计算密集 vs 存储密集）。
-
-### 2. AdaChcoursen 的核心思想：强化学习 (RL)
-
-它不再手动选择协议，而是通过机器学习自动切换最适合当前环境的架构。
-
-#### 算法逻辑：上下文多臂老虎机 (CMAB)
-
-- **Context (上下文)**：当前工作负载的属性（读写比、冲突率等）和硬件状态。
-- **Arms (动作)**：可选的区块链架构（如 OX: Order-Execute, XOV: Execute-Order-Validate 等）。
-- **Reward (奖励)**：该架构运行后的实际吞吐量。
-- **Thompson Sampling (汤普森采样)**：
-  AdaChcoursen 使用该算法来平衡 **Exploration (探索)** 和 **Exploitation (利用)**。它不会盲目选择目前表现最好的，而是保留一定的概率去尝试其他架构，以应对环境的变化。
-
-#### 系统架构
-
-1. **Featurizer**：从区块中实时提取特征。
-2. **Learning Agent**：内部运行 **Random Forest Regressor**。为了保证分布式环境的一致性，所有节点必须使用**相同的随机种子**，确保训练和推理结果在全网是确定的（Deterministic）。
-3. **Validator**：决定何时执行“热切换”到新架构。
+**原理：** 每个明文块在加密前先与前一个密文块异或，公式为 $C_i = E_K(m_i \oplus C_{i-1})$。
+**分析：** 虽然 $m_2$ 相同，但在 $M_1$ 中它异或的是 $C_1$，而在 $M_2$ 中它异或的是 $C'_1$。因为 $C_1 \neq C'_1$，导致后续所有的密文块都会完全不同。这就是**雪崩效应（Diffusion）**。
+**结论：** Q2 正确。密文块不会重复。
 
 <img
-  src="/static/images/course/adachcoursen-rl-formulation.png"
-  alt="AdaChcoursen 强化学习问题建模：状态、动作与奖励"
+  src="/static/images/course/theory-cbc-chain.png"
+  alt="CBC 模式原理图：展示密文块如何链接"
   width="700"
 />
 
+### Q3 & Q4: CTR (Counter) 模式
+
+**原理：** 将加密算法当作流加密器。加密一个递增的计数器（Nonce + Counter），然后与明文异或。公式为 $C_i = m_i \oplus E_K(\text{Counter}_i)$。
+**分析：**
+
+- **Q3（相同 IV/Nonce）：** 如果 IV 相同，生成的密钥流（Keystream） $E_K(\text{Counter})$ 就完全相同。此时 $C_2 = m_2 \oplus \text{KeyStream}_2$，密文块必然重复。
+- **Q4（唯一 IV）：** 不同的 IV 生成不同的密钥流，即使明文相同，密文也会完全不同。
+  **结论：** Q3 错误，Q4 正确。
+
 ---
 
-## 第五部分：实战预演——你将面临的“敌人”
+## 2. 环境准备
 
-在接下来的几周，我们将深入实验室（SEED Labs）亲手模拟黑客攻击。
+本实验基于 **SEED Ubuntu 16.04 VM**。请确保你已经安装好虚拟机并能打开终端。
 
-### 1. 缓冲区溢出 (Buffer Overflow)
+- **工作账户：** `seed`
+- **默认密码：** `dees`
 
-这是计算机安全史上最著名的漏洞。通过向固定长度的缓冲区输入超长数据，覆盖函数返回地址（Return Address），从而劫持程序流。
+---
 
-<img src="/static/images/course/vulnerablecode1.png" alt="恶意代码" width="700" />
-<img src="/static/images/course/vulnerablecode2 .png" alt="恶意代码" width="700" />-
-**反制手段**：地址空间随机化 (ASLR)、不可执行堆栈 (NX)。
+## 3. 手把手实验步骤
 
-### 2. SQL 注入 (SQL Injection)
+### 第一步：创建测试明文
 
-通过修改 Web 表单的输入，将恶意 SQL 命令注入后台数据库。
+我们需要手动创建两个文件，确保它们只有前 16 个字节（AES 的一个块大小）不同。
 
-- **经典 Payload**：`' OR '1'='1`。
+```bash
+# 进入桌面创建一个实验文件夹
+cd ~/Desktop && mkdir crypto_lab && cd crypto_lab
+
+# 创建 M1 (Student ID: 11335577)
+echo "11335577 is my student ID. This part is common for both files." > f1.txt
+
+# 创建 M2 (Student ID: 22446688)
+echo "22446688 is my student ID. This part is common for both files." > f2.txt
+
+# 确认文件内容
+cat f1.txt
+cat f2.txt
+```
+
+### 第二步：验证 ECB 的缺陷
+
+执行加密并观察密文。
+
+```bash
+# 使用 AES-128-ECB 加密，不填 IV（ECB 不需要 IV）
+openssl enc -aes-128-ecb -e -in f1.txt -out f1_ecb.bin -K 00112233445566778899aabbccddeeff
+openssl enc -aes-128-ecb -e -in f2.txt -out f2_ecb.bin -K 00112233445566778899aabbccddeeff
+
+#openssl enc -aes-128-ecb -e：用 AES-128 的 ECB 模式进行加密
+#-in / -out：输入文件 → 输出密文文件
+#-K 0011...eeff：直接指定十六进制对称密钥
+
+# 使用 xxd 比较密文
+xxd f1_ecb.bin
+xxd f2_ecb.bin
+
+#xxd 是把文件的二进制内容以十六进制（hex）形式打印出来，方便人看和分析的工具。
+
+```
+
+**实验现象：** 你会看到第一行之后的十六进制编码完全一样！这证明了 ECB 无法隐藏重复的明文块。
 
 <img
-  src="/static/images/course/sql-injection-example.png"
-  alt="SQL 注入攻击原理示意图"
-  width="650"
+  src="/static/images/course/lab-ecb-result.png"
+  alt="终端截图：展示 ECB 模式下密文块的重复现象"
+  width="700"
 />
+
+### 第三步：验证 CBC 的雪崩效应
+
+使用相同的密钥和相同的初始向量（IV）。
+
+```bash
+# 使用相同的 K 和 iv
+openssl enc -aes-128-cbc -e -in f1.txt -out f1_cbc.bin -K 00112233445566778899aabbccddeeff -iv 01020304050607080102030405060708
+openssl enc -aes-128-cbc -e -in f2.txt -out f2_cbc.bin -K 00112233445566778899aabbccddeeff -iv 01020304050607080102030405060708
+
+#IV（Initialization Vector，初始化向量）是 CBC 模式里用来“打乱第一块加密起点”的随机值，防止相同明文在相同密钥下产生相同密文。
+
+# 比较密文
+xxd f1_cbc.bin
+xxd f2_cbc.bin
+```
+
+**实验现象：** 尽管 $M_1$ 和 $M_2$ 大部分相同，但 CBC 生成的密文从头到尾彻底不同。
+
+### 第四步：验证 CTR 的计数器重用危机
+
+**Q3（相同 IV）：**
+
+```bash
+openssl enc -aes-128-ctr -e -in f1.txt -out f1_ctr_same.bin -K 00112233445566778899aabbccddeeff -iv 01020304050607080102030405060708
+openssl enc -aes-128-ctr -e -in f2.txt -out f2_ctr_same.bin -K 00112233445566778899aabbccddeeff -iv 01020304050607080102030405060708
+xxd f1_ctr_same.bin
+xxd f2_ctr_same.bin
+```
+
+**实验现象：** 密文再次出现了部分重复。这在流加密中极其危险（Two-Time Pad 攻击）。
+
+**Q4（唯一 IV）：**
+修改 `-iv` 参数为另一个值，你会发现密文恢复了多样性。
 
 ---
 
-## 结语：如何深度掌握这门课？
+## 4. 总结
 
-看完这篇博客，你应该意识到，CS 5293 并不是一门让你死记硬背的课，它要求你：
+| 加密模式 | 扩散性 (Diffusion) | 是否建议使用 | 备注                       |
+| :------- | :----------------- | :----------- | :------------------------- |
+| **ECB**  | 无                 | **绝不建议** | 容易受到重放攻击和统计分析 |
+| **CBC**  | 强                 | **建议**     | 必须确保 IV 唯一且不可预测 |
+| **CTR**  | 强 (依赖 IV)       | **建议**     | **绝对不能**重用 Nonce/IV  |
 
-1. **理解原理**：搞清楚为什么拜占庭容错需要 $3f+1$。
-2. **关注前沿**：思考 course（如强化学习）如何赋能传统的安全架构。
-3. **勤于动手**：尽早配置 VirtualBox，尝试在本地运行第一个缓冲区溢出实验。
+通过本次实验，我们验证了：在密码学中，**扩散性**是衡量一种加密模式安全性的重要指标。CBC 通过链式反馈实现了优秀的扩散，而 CTR 则高度依赖 IV 的唯一性。
 
-**下周预告**：我们将深入探讨密码学基础及其在区块链中的应用。Stay tuned!
+---
+
+如果这篇博客对你有帮助，请点击下方按钮，来到我的github主页点个赞吧
+
+<img src="/static/images/like.png" alt="like" width="700" />
