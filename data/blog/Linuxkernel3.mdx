@@ -1,7 +1,7 @@
 ---
 title: 'Syscall 深度解剖：用户态如何合法越界进入内核世界'
 date: '2026-02-12'
-tags: ['Linux Kernel']
+tags: ['Kernel secutity']
 draft: false
 summary: '为什么普通程序无法直接访问硬件？glibc 到内核之间到底发生了什么？本文从 CPU 特权级切换出发，系统拆解 Linux Syscall 的完整执行链路，对比 x86、ARM、RISC-V 架构差异，并从安全与逆向视角理解“系统调用”这一用户态与内核态的唯一合法边界。'
 ---

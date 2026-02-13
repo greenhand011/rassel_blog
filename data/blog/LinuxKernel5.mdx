@@ -1,259 +1,97 @@
 ---
-title: 'Syscall 深度解剖：用户态如何合法越界进入内核世界'
-date: '2026-02-12'
-tags: ['Linux Kernel']
+title: '从零构建安全加固的最小嵌入式系统：Buildroot 实战指南'
+date: '2026-02-13'
+tags: ['Kernel secutity']
 draft: false
-summary: '为什么普通程序无法直接访问硬件？glibc 到内核之间到底发生了什么？本文从 CPU 特权级切换出发，系统拆解 Linux Syscall 的完整执行链路，对比 x86、ARM、RISC-V 架构差异，并从安全与逆向视角理解“系统调用”这一用户态与内核态的唯一合法边界。'
+summary: '如何在资源受限的嵌入式设备上构建既轻量又安全的 Linux 系统？本文带你走进 Buildroot 的世界，从交叉编译原理出发，手把手教你配置最小文件系统，并通过 SSH 加固与 iptables 防火墙策略，打造一个坚不可摧的嵌入式“哨兵”。'
 ---
 
-## 一、为什么 Syscall 是 Linux 的“唯一正门”？
+在嵌入式开发的世界里，“多即是恶”。每一个多余的软件包、每一个默认开启的端口，都是潜藏的安全隐患。今天，我们将通过 Buildroot 工具链，亲手打造一个“最小化”且“高安全性”的 Linux 文件系统。
 
-在 Linux 中，用户程序几乎**什么都做不了**：
+## 一、 认知重构：什么是最小文件系统？
 
-- 不能直接读磁盘
-- 不能创建进程
-- 不能操作网络
-- 不能访问内核内存
-- 不能执行特权指令
+如果你习惯了 Ubuntu 这样动辄数 GB 的“精装修”系统，那么**最小文件系统（Minimal Filesystem）**就像是一个只带枪和发报机的荒岛哨所。它只包含：
 
-但现实中你每天都在：
+1. **基础目录结构**：`/bin`, `/etc`, `/lib` 等必备文件夹。
+2. **Busybox**：一个将数百个常用命令（ls, cd, sh）压缩在一起的“瑞士军刀”。
+3. **必要的驱动与配置**：保证硬件能跑，网络能通。
 
-```c
-open();
-read();
-write();
-fork();
-execve();
+为什么要这么做？**越简单，攻击面就越小。**
+
+<img
+  src="/static/images/IOT/buildroot-menuconfig.png"
+  alt="Buildroot Menuconfig 界面"
+  width="700"
+/>
+
+---
+
+## 二、 核心工具链：Toolchain 的秘密
+
+在 Ubuntu 上构建嵌入式系统，最绕不开的概念就是 **Toolchain（工具链）**。
+由于我们的开发机是 x86 架构，而目标板可能是 ARM 或 RISC-V，我们无法直接编译。Toolchain 就像是一个“跨国翻译官”，它运行在 PC 上，但能产出目标芯片可以执行的机器码。
+
+在 Buildroot 中，我们只需在 `Target options` 中选好架构，剩下的脏活累活它都会帮我们自动完成。
+
+---
+
+## 三、 实战：三位一体的安全加固
+
+一个裸奔的系统是黑客的温床。我们的加固方案由三部分组成：**权限收缩、访问控制、流量隔离**。
+
+### 1. Rootfs Overlay：系统的“定制贴纸”
+
+Buildroot 的 `Overlay` 机制允许我们在编译的最后阶段，将自定义的配置文件“覆盖”到生成的文件系统中。这是实现自动化加固的核心。
+
+### 2. SSH 加固：把 Root 关在门外
+
+默认情况下，Root 用户可以通过 SSH 登录，这简直是给黑客递钥匙。我们通过修改 `/etc/ssh/sshd_config`：
+
+```text
+PermitRootLogin no        # 禁止 Root 直接登录
+PasswordAuthentication yes # 允许密码验证（进阶可改为密钥登录）
+Port 22                   # 基础端口
 ```
 
-这背后只有一个原因：
+### 3. iptables：构建流量防火墙
 
-> **Linux 允许用户态通过 Syscall，请求内核代为执行特权操作。**
+我们为系统配备了一个“数字保安”。通过编写 `S99firewall` 启动脚本，实现以下逻辑：
 
-Syscall 的本质不是“跳转”，而是：
+- **默认拒绝（Default Drop）**：除了我允许的，谁也不准进。
+- **允许回环（Loopback）**：保证系统内部通讯正常。
+- **定向开放**：仅放行 TCP 22 端口供 SSH 使用。
 
-> **一次受 CPU 严格监管的特权级切换。**
-
----
-
-## 二、从整体看：Syscall 在系统中的位置
-
-先看一张逻辑图（非常重要）：
-
-```
-用户程序
-  ↓
-glibc 封装（open / read / write）
-  ↓
-syscall 指令（架构相关）
-  ↓
-内核统一入口
-  ↓
-sys_xxx() 内核函数
-  ↓
-返回用户态
-```
-
-👉 **用户态永远无法直接调用内核函数。**
+<img src="/static/images/IOT/iptables-logic.png" alt="iptables 流量过滤原理图" width="700" />
+*(注释：此处建议放置一张展示 iptables INPUT 链过滤过程的示意图，体现从 DROP 到 ACCEPT
+的规则匹配顺序)*
 
 ---
 
-## 三、CPU 视角：Syscall 到底“干了什么”？
+## 四、 深度解剖：iptables 的命令语法
 
-不管是哪个架构，Syscall 都完成了这几件事：
+在配置防火墙时，你可能会看到这样的命令：
+`iptables -A INPUT -p tcp --dport 22 -j ACCEPT`
 
-1. CPU 当前在 **用户态**
-2. 执行一条“系统调用指令”
-3. **CPU 自动切换到内核态**
-4. 切换到内核栈
-5. 跳转到内核预设入口
-6. 执行内核代码
-7. 安全返回用户态
+- **-A (Append)**：在规则表末尾追加。
+- **-p (Protocol)**：指定 TCP 协议。
+- **--dport (Destination Port)**：指向 22 号“门牌号”。
+- **-j (Jump)**：符合条件后的动作，这里是 `ACCEPT`（放行）。
 
-⚠️ 注意：  
-**整个过程不是 Linux 决定的，而是 CPU 硬件强制完成的。**
+这种“从上往下”的匹配机制，确保了我们的安全策略能够像过滤网一样精准。
 
 ---
 
-## 四、x86 架构：syscall / sysenter
+## 五、 总结与扩展
 
-### 4.1 从 `int 0x80` 说起（历史）
+通过本次实践，我们不仅学会了如何使用 Buildroot 编译系统，更理解了**“安全是一种设计，而非插件”**的理念。
 
-早期 Linux 使用：
+**进阶思考：**
 
-```asm
-int 0x80
-```
+- **只读文件系统**：如果我们将根文件系统设为 Read-only，即便黑客临时攻破，也无法持久化修改系统。
+- **Yocto Project**：对于更复杂的工业级项目，Yocto 提供的层管理（Layers）将比 Buildroot 更加灵活。
 
-特点：
-
-- 真·中断
-- 保存大量上下文
-- **慢，但通用**
-
----
-
-### 4.2 现代主流：`syscall`
-
-在 x86-64 中，Linux 默认使用：
-
-```asm
-syscall
-```
-
-执行后 CPU 会自动：
-
-- CPL 3 → CPL 0
-- RIP 跳转到 MSR 中指定的内核入口
-- RSP 切换为内核栈
-- 保存返回地址到 `RCX`
-- 保存 RFLAGS 到 `R11`
-
-📌 **这是一次“快速特权切换”，不是中断。**
-
----
-
-## 五、ARM：SVC（Supervisor Call）
-
-在 ARM 架构中，系统调用通过：
-
-```asm
-svc #0
-```
-
-完成。
-
-其本质是：
-
-> **主动触发一次同步异常**
-
-流程是：
-
-- EL0（用户态） → EL1（内核态）
-- 跳转到异常向量表
-- 进入 SVC handler
-
-ARM 的设计哲学非常明确：
-
-> **Syscall = 一种受控异常**
-
----
-
-## 六、RISC-V：ecall（极简而优雅）
-
-RISC-V 的系统调用只有一条指令：
-
-```asm
-ecall
-```
-
-含义：
-
-- 从 U-mode 进入 S-mode
-- 触发 Environment Call Exception
-- 跳转到统一 trap handler
-
-RISC-V 的理念是：
-
-> **系统调用只是异常的一种。**
-
----
-
-## 七、Syscall 参数是怎么传的？
-
-这是二进制分析中非常关键的一点。
-
-### 7.1 x86-64 Linux 约定
-
-| 参数           | 寄存器 |
-| -------------- | ------ |
-| syscall number | RAX    |
-| arg1           | RDI    |
-| arg2           | RSI    |
-| arg3           | RDX    |
-| arg4           | R10    |
-| arg5           | R8     |
-| arg6           | R9     |
-
-返回值：
-
-- 成功：RAX ≥ 0
-- 失败：RAX < 0（-errno）
-
----
-
-### 7.2 为什么 glibc 很重要？
-
-你在 C 里调用的是：
-
-```c
-read(fd, buf, len);
-```
-
-glibc 帮你做了：
-
-- 设置寄存器
-- 执行 syscall 指令
-- 处理 errno
-
-👉 **Syscall 很少被手写，但必须被理解。**
-
----
-
-## 八、内核视角：Syscall 如何被分发？
-
-进入内核后，流程大致是：
-
-```
-syscall entry
-  ↓
-保存寄存器
-  ↓
-检查 syscall number
-  ↓
-sys_call_table[nr]
-  ↓
-sys_read / sys_write / sys_open
-```
-
-这也是为什么：
-
-- syscall number 越界会被拒绝
-- 随意跳转是不可能的
-
----
-
-## 九、安全视角：为什么 Syscall 是攻击焦点？
-
-几乎所有用户态攻击，最终都要问：
-
-- 能不能伪造 syscall 参数？
-- 能不能劫持 syscall 返回？
-- 能不能影响内核执行路径？
-
-但同时：
-
-> **Syscall 也是 Linux 最严密防护的入口之一。**
-
-- 参数必须 copy_from_user
-- 地址必须校验
-- 特权严格分级
-
----
-
-## 十、总结：Syscall 是一条被“精心设计的边界”
-
-Syscall 解决的不是“怎么方便”，而是：
-
-> **如何在不信任用户的前提下，让系统还能工作。**
-
-它是：
-
-- 用户态与内核态的分水岭
-- 所有权限模型的入口
-- 内核安全设计的核心支点
-
----
+<img src="/static/images/IOT/build-success.png" alt="Buildroot 编译成功界面" width="700" />
+*(注释：此处建议放置一张终端显示 make 完成，生成 rootfs.tar 或 rootfs.ext4 的成功截图)*
 
 如果这篇解剖报告帮你理清了迷雾，请点击页面底部下图按钮，移步我的 GitHub 为我点亮星标！
 
