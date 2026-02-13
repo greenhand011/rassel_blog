@@ -1,7 +1,7 @@
 ---
 title: '从零构建安全加固的最小嵌入式系统：Buildroot 实战指南'
 date: '2026-02-13'
-tags: ['Kernel secutity']
+tags: ['Kernel security']
 draft: false
 summary: '如何在资源受限的嵌入式设备上构建既轻量又安全的 Linux 系统？本文带你走进 Buildroot 的世界，从交叉编译原理出发，手把手教你配置最小文件系统，并通过 SSH 加固与 iptables 防火墙策略，打造一个坚不可摧的嵌入式“哨兵”。'
 ---
@@ -62,8 +62,6 @@ Port 22                   # 基础端口
 - **定向开放**：仅放行 TCP 22 端口供 SSH 使用。
 
 <img src="/static/images/IOT/iptables-logic.png" alt="iptables 流量过滤原理图" width="700" />
-*(注释：此处建议放置一张展示 iptables INPUT 链过滤过程的示意图，体现从 DROP 到 ACCEPT
-的规则匹配顺序)*
 
 ---
 
@@ -91,7 +89,6 @@ Port 22                   # 基础端口
 - **Yocto Project**：对于更复杂的工业级项目，Yocto 提供的层管理（Layers）将比 Buildroot 更加灵活。
 
 <img src="/static/images/IOT/build-success.png" alt="Buildroot 编译成功界面" width="700" />
-*(注释：此处建议放置一张终端显示 make 完成，生成 rootfs.tar 或 rootfs.ext4 的成功截图)*
 
 如果这篇解剖报告帮你理清了迷雾，请点击页面底部下图按钮，移步我的 GitHub 为我点亮星标！
 
