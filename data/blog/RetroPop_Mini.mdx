@@ -1,7 +1,7 @@
 ---
 title: 'RetroPop Mini 开发日志 #01：从点亮星露谷开机图，到第一次用安全工程师的眼睛看掌机'
 date: '2026-03-19'
-tags: ['Embedded', 'ESP32', 'ST7789', 'IoT Security', 'Game Dev']
+tags: ['Embedded']
 draft: false
 summary: '这不是一次普通的点亮屏幕实验，而是我第一次把一个小掌机项目，同时当成嵌入式开发练习和嵌入式安全入门案例来理解。'
 ---
@@ -20,12 +20,6 @@ summary: '这不是一次普通的点亮屏幕实验，而是我第一次把一�
 2. **把整个开发过程，当成一次嵌入式系统安全的入门训练**
 
 也就是说，这不是一次单纯的“点屏”实验，而是一次真正让我从“能做出来”开始，慢慢走向“能理解它为什么会工作，也能意识到它为什么可能被分析、被修改、被观察”的起点。
-
-<img
-  src="/static/images/GameCC/day1-hero-device.png"
-  alt="RetroPop Mini 第一天开发场景"
-  width="700"
-/>
 
 ---
 
@@ -89,12 +83,6 @@ E:\GameCC
 也就是说，屏幕上出现的画面，不是“直接打开了一张图片文件”，而是：
 
 > **程序在运行时，把一串像素数据经过总线送进了显示控制器。**
-
-<img
-  src="/static/images/GameCC/day1-display-pipeline.png"
-  alt="从图像数组到屏幕显示的数据链路"
-  width="700"
-/>
 
 ---
 
@@ -278,11 +266,7 @@ E:\GameCC
 - 一种是做礼物、做复古设备的浪漫
 - 一种是理解系统、理解底层、理解安全的浪漫
 
-<img
-  src="/static/images/GameCC/day1-summary-sketch.png"
-  alt="RetroPop Mini 第一天的开发与安全学习总结"
-  width="700"
-/>
+<img src="/static/images/GameCC/day1-result.png" alt="RetroPop Mini 第一天的成果" width="700" />
 
 ---
 
