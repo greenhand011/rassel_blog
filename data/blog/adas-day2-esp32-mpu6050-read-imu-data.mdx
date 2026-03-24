@@ -1,0 +1,481 @@
+---
+title: 'ADAS ECU 实验台 Day 2：接好 ESP32 + MPU6050，拿到第一帧 IMU 原始数据'
+date: '2026-03-24'
+tags: ['Embedded']
+draft: false
+summary: '这一天我先不急着堆功能，而是把 ESP32 和 MPU6050 的最小闭环跑通，确认供电、串口、I2C 和原始寄存器读取都成立，再把读数整理成第一个 sensor 模块雏形，为后面的诊断、日志和安全处理建立一条可信输入链路。'
+---
+
+Day 1 我把 ESP32 开发环境和最基本的工程骨架摸清了，Day 2 的重点就很明确了：先把传感器接起来，让板子真的读到一份来自外部世界的输入。
+
+表面上看，这一天做的事情就是“接线 + 读数”。但我这里真正想先确认的，不是串口里能不能跳几个数字，而是这套实验台第一次接入真实传感器之后，底下这条输入链到底通不通、顺不顺、能不能解释清楚。后面不管是 `sensor task`、诊断、日志，还是安全版和非安全版的对比，前提都得是这条输入路径先站住。
+
+## 今天先把什么跑通
+
+我给自己定的目标很克制，不追求一下子把整套工程做大，而是先把这条最小闭环打通：
+
+- `ESP32 -> I2C 总线 -> MPU6050 -> 串口日志 -> 电脑`
+- 先确认供电和接线没问题
+- 再确认 ESP32 自己能稳定下载和输出日志
+- 再确认 I2C 上真的能找到设备
+- 最后直接读寄存器，拿到加速度、温度和陀螺仪的原始值
+
+我这里不急着往后堆功能，先把输入底座做扎实。这样后面如果哪一步出问题，我至少还能先判断问题到底出在供电、接线、串口、I2C，还是已经跑到更上层的任务逻辑去了，而不是一开始就把所有东西搅在一起查。
+
+## 先把板子和模块认清楚
+
+### ESP32 这边先看什么
+
+先看开发板本身，我主要盯住了几样东西：
+
+- `Type-C` 口：后面给板子供电、烧录程序、看串口日志，都要从这里进
+- 中间偏上的金属屏蔽壳模组：通常会写着 `ESP-WROOM-32` 或 `ESP32-WROOM`，这块就是主控核心
+- 两颗按键：常见标注是 `RST` 和 `BOOT`，后面烧录和排错经常会用到
+- 两侧排针附近的丝印：先重点找 `3V3`、`GND`，再留意 `GPIO21`、`GPIO22`
+
+我这里并不是想把所有引脚都背下来，而是先把跟供电、调试、外设连接直接相关的位置认出来。后面真开始动手的时候，先盯住这些关键点就够用了。
+
+<img
+  src="/static/images/ADAS/adas-day2-esp32-mpu6050-01-esp32-board.jpg"
+  alt="ESP32 开发板整体外观，用来识别 Type-C 口、模组位置和排针区域"
+  width="700"
+/>
+
+板子靠近接口和按键的细节我也单独看了一眼。`RST` 可以理解成重启键，`BOOT` 是下载相关状态时可能会用到的辅助键。Day 2 这里只做识别，先不去按它们。
+
+<img
+  src="/static/images/ADAS/adas-day2-esp32-mpu6050-03-esp32-closeup.jpg"
+  alt="ESP32 开发板局部特写，用来观察 Type-C、按键和周边丝印"
+  width="700"
+/>
+
+### MPU6050 这边先盯住哪几个脚
+
+MPU6050 这块模块我没有一上来就把所有脚都研究完，而是先盯住最关键的四个：
+
+- `VCC`：供电
+- `GND`：地
+- `SDA`：I2C 数据线
+- `SCL`：I2C 时钟线
+
+像 `XDA`、`XCL`、`AD0`、`INT` 这些脚，我这里先知道它们是干什么的大概方向就够了。Day 2 的目标不是把模块吃干榨净，而是先把最小闭环跑通。
+
+<img
+  src="/static/images/ADAS/adas-day2-esp32-mpu6050-02-mpu6050-module.jpg"
+  alt="MPU6050 模块外观，重点识别 VCC、GND、SCL、SDA 四个关键引脚"
+  width="700"
+/>
+
+## 先接最小四线，不急着堆功能
+
+我这里采用的是最小四线连接：
+
+- `ESP32 3V3 -> MPU6050 VCC`
+- `ESP32 GND -> MPU6050 GND`
+- `ESP32 GPIO22 -> MPU6050 SCL`
+- `ESP32 GPIO21 -> MPU6050 SDA`
+
+有些 ESP32 板子的丝印写的是 `D22 / D21`，有些直接写 `22 / 21`，本质上对的还是 `GPIO22 / GPIO21`。只要别把信号线和供电线搞混就行。
+
+我这里刻意只保留最小闭环，原因很简单：现在还不是堆功能的时候。先让输入链以最小代价跑通，后面不管是加任务、加日志，还是加检查逻辑，都会更稳一点。对这种实验来说，系统边界收得越小，问题越不容易飘。
+
+接线顺序上，我是先接电源，再接信号：
+
+1. 把 ESP32 跨在面包板中缝上，保证两侧排针都能独立落孔
+2. 把 MPU6050 插到旁边，至少让 `VCC / GND / SCL / SDA` 这排脚位看得清楚
+3. 先接 `3V3 -> VCC`
+4. 再接 `GND -> GND`
+5. 最后接 `GPIO22 -> SCL` 和 `GPIO21 -> SDA`
+
+这里 `GND -> GND` 不能省。我这一步主要是想先把最基础的参考基准定住。没有共地，哪怕其它线看起来都接对了，通信也可能表现得很怪，后面你看到的很多“像是程序问题”的现象，其实根子还在硬件层。
+
+为了后面看线舒服一点，我给自己定了个简单配色习惯：
+
+- 红线接 `3V3`
+- 黑线接 `GND`
+- 蓝线接 `GPIO21 -> SDA`
+- 白线接 `GPIO22 -> SCL`
+
+这不是硬性规定，但线一多起来，自己回头看也会舒服很多。
+
+<img
+  src="/static/images/ADAS/adas-day2-esp32-mpu6050-04-minimum-wiring.png"
+  alt="ESP32 与 MPU6050 的最小四线接法示意图，明确 3V3、GND、SCL、SDA 的对应关系"
+  width="700"
+/>
+
+## 第一次上电，先做硬件健康检查
+
+线接好以后，我没有马上开 Arduino IDE 烧程序，而是先停下来做一轮很基础的健康检查。原因也不复杂，我想先确认板子是在一个正常、安稳的状态下上电，而不是一边怀疑哪里短了，一边往里烧程序。
+
+我这里主要看这几件事：
+
+- 板子上电后有没有亮灯
+- ESP32 和 MPU6050 有没有立刻异常发热
+- 有没有焦糊味、塑料味这类明显异常
+- 电脑有没有识别到新的设备或新的 `COM` 口
+
+刚插上的时候，系统里先出现的是一个 `Unknown COM5`。我看到这个其实没太慌，因为它至少说明电脑已经感知到了一个新的 USB 串口设备，只是这时候还没完全认出来是谁。
+
+<img
+  src="/static/images/ADAS/adas-day2-esp32-mpu6050-05-unknown-com5.png"
+  alt="刚接上开发板时系统先出现 Unknown COM5，说明电脑已经感知到新的串口设备"
+  width="700"
+/>
+
+继续确认之后，我这里识别到的是 `USB-SERIAL CH340 (COM5)`。到这里，底层那几个最烦人的问题基本就能先排掉了，比如线有问题、板子没正常上电，或者电脑压根没看到设备。
+
+<img
+  src="/static/images/ADAS/adas-day2-esp32-mpu6050-06-ch340-com5.png"
+  alt="设备管理器识别出 USB-SERIAL CH340(COM5)，说明串口下载链路已经基本成立"
+  width="700"
+/>
+
+## 先让 ESP32 自己开口说话
+
+传感器这边我还没急着读，先烧了一段最小串口程序。目的不是做功能，而是想先让 ESP32 自己开口说话，把下载链路和串口观测链路先单独跑通：
+
+- `电脑 -> Arduino IDE -> CH340 -> ESP32`
+- `ESP32 -> 串口输出 -> 电脑`
+
+原始笔记里这段程序是这样的：
+
+```cpp
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+
+  Serial.println();
+  Serial.println("=== ADAS ECU Security Lab ===");
+  Serial.println("Boot OK");
+  Serial.println("Serial path OK");
+}
+
+void loop() {
+  static int counter = 0;
+
+  Serial.print("Heartbeat: ");
+  Serial.println(counter);
+
+  counter++;
+  delay(1000);
+}
+```
+
+Arduino IDE 这边我选的是 `ESP32 Dev Module`，端口就是刚识别出来的 `COM5`。这一步本身不复杂，但很有必要。因为只要最小串口程序都能稳定输出，后面再碰到 I2C 或传感器相关的问题，我就不用回头怀疑是不是下载链路和串口链路本身就没通。
+
+<img
+  src="/static/images/ADAS/adas-day2-esp32-mpu6050-07-arduino-board-port-selection.png"
+  alt="Arduino IDE 中选择 ESP32 Dev Module 和对应 COM 口"
+  width="700"
+/>
+
+看到心跳输出以后，我对 Day 2 的前半段就放心很多了。不过到这里其实还不能说明整个模块已经稳定，只能说明最小链路通了。至少先能确认三件事：
+
+- 固件下载链路通了
+- 串口观测链路通了
+- ESP32 已经能稳定执行我写进去的代码
+
+<img
+  src="/static/images/ADAS/adas-day2-esp32-mpu6050-08-serial-heartbeat.png"
+  alt="最小串口程序输出 Heartbeat，证明固件下载和串口观测链路正常"
+  width="700"
+/>
+
+## 跑 I2C 扫描，先确认 MPU6050 在线
+
+串口这边站稳以后，我没有立刻往寄存器读写里冲，而是先做了一步更朴素的确认：I2C 扫描。
+
+我这里先跑 I2C 扫描，不是为了做复杂测试，只是想先确认最基本的一件事：板子和 IMU 至少已经能在总线上互相看见。这个小步骤先过了，后面再去怀疑寄存器、驱动或者读数逻辑才有意义。
+
+原始笔记里的 I2C 扫描程序如下：
+
+```cpp
+#include <Wire.h>
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+
+  Serial.println();
+  Serial.println("=== I2C Scanner Start ===");
+
+  // 明确指定 ESP32 的 I2C 引脚
+  // SDA = GPIO21, SCL = GPIO22
+  Wire.begin(21, 22);
+
+  byte count = 0;
+
+  for (byte address = 1; address < 127; address++) {
+    Wire.beginTransmission(address);
+    byte error = Wire.endTransmission();
+
+    if (error == 0) {
+      Serial.print("I2C device found at 0x");
+      if (address < 16) {
+        Serial.print("0");
+      }
+      Serial.println(address, HEX);
+      count++;
+    }
+  }
+
+  if (count == 0) {
+    Serial.println("No I2C device found.");
+  } else {
+    Serial.print("Total device count: ");
+    Serial.println(count);
+  }
+
+  Serial.println("=== I2C Scanner Done ===");
+}
+
+void loop() {
+  // 这里先不循环扫描，避免刷屏
+}
+```
+
+跑出来的结果也很干净：
+
+```text
+=== I2C Scanner Start ===
+I2C device found at 0x68
+Total device count: 1
+=== I2C Scanner Done ===
+```
+
+<img
+  src="/static/images/ADAS/adas-day2-esp32-mpu6050-09-i2c-scanner-found-0x68.png"
+  alt="I2C 扫描结果显示在 0x68 找到唯一设备，说明 MPU6050 已经在线"
+  width="700"
+/>
+
+这里的 `0x68` 对我来说不是“眼熟就行”的那种结果，而是一个很具体的确认点。对 MPU6050 来说，默认 7 位地址就是 `0x68`。看到它出现，我这里就能先确认两件事：
+
+- 这条 `ESP32 -> I2C -> MPU6050` 的总线链路已经打通了
+- 总线上回应我的，大概率就是我刚接上的这块 MPU6050
+
+如果这一步没过，后面直接读寄存器基本就是瞎撞。
+
+## 继续往前走：直接读 MPU6050 原始数据
+
+I2C 扫描通过之后，还只能说明“有设备在 0x68 上回应”，但这还不够。我这里接着往下做，是想确认另一件事：这个设备不只是挂在总线上，它还真的能吐出我能解释的数据。所以接下来就是直接读 MPU6050 寄存器，拿加速度、温度和陀螺仪原始值。
+
+我这里刻意没有直接套一个黑盒库跑结果。不是说库不能用，而是 Day 2 这个阶段，我更想知道这份数据到底是从哪个地址、哪个寄存器、以什么字节布局进来的。后面做诊断、异常检测、输入可信性判断的时候，这层认知会比“代码能跑”本身更有用。
+
+原始笔记里这段程序是完整保留下来的：
+
+```cpp
+#include <Wire.h>
+
+#define MPU_ADDR 0x68
+
+// MPU6050 寄存器
+#define REG_PWR_MGMT_1   0x6B
+#define REG_WHO_AM_I     0x75
+#define REG_ACCEL_XOUT_H 0x3B
+
+void writeRegister(uint8_t reg, uint8_t value) {
+  Wire.beginTransmission(MPU_ADDR);
+  Wire.write(reg);
+  Wire.write(value);
+  Wire.endTransmission();
+}
+
+uint8_t readRegister(uint8_t reg) {
+  Wire.beginTransmission(MPU_ADDR);
+  Wire.write(reg);
+  Wire.endTransmission(false);
+
+  Wire.requestFrom(MPU_ADDR, (uint8_t)1);
+  if (Wire.available()) {
+    return Wire.read();
+  }
+  return 0xFF;
+}
+
+int16_t readInt16(uint8_t reg) {
+  Wire.beginTransmission(MPU_ADDR);
+  Wire.write(reg);
+  Wire.endTransmission(false);
+
+  Wire.requestFrom(MPU_ADDR, (uint8_t)2);
+  if (Wire.available() < 2) {
+    return 0;
+  }
+
+  uint8_t highByte = Wire.read();
+  uint8_t lowByte  = Wire.read();
+
+  return (int16_t)((highByte << 8) | lowByte);
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+
+  Serial.println();
+  Serial.println("=== MPU6050 RAW DATA TEST ===");
+
+  Wire.begin(21, 22);
+
+  // 先读设备身份
+  uint8_t whoami = readRegister(REG_WHO_AM_I);
+  Serial.print("WHO_AM_I = 0x");
+  Serial.println(whoami, HEX);
+
+  // 唤醒 MPU6050（默认上电后通常是睡眠态）
+  writeRegister(REG_PWR_MGMT_1, 0x00);
+  delay(100);
+
+  Serial.println("MPU6050 wake up done.");
+  Serial.println("Start reading raw data...");
+}
+
+void loop() {
+  int16_t ax = readInt16(0x3B);
+  int16_t ay = readInt16(0x3D);
+  int16_t az = readInt16(0x3F);
+
+  int16_t tempRaw = readInt16(0x41);
+
+  int16_t gx = readInt16(0x43);
+  int16_t gy = readInt16(0x45);
+  int16_t gz = readInt16(0x47);
+
+  Serial.print("ACC  ");
+  Serial.print("ax="); Serial.print(ax);
+  Serial.print("  ay="); Serial.print(ay);
+  Serial.print("  az="); Serial.print(az);
+
+  Serial.print(" | TEMP_RAW=");
+  Serial.print(tempRaw);
+
+  Serial.print(" | GYRO  ");
+  Serial.print("gx="); Serial.print(gx);
+  Serial.print("  gy="); Serial.print(gy);
+  Serial.print("  gz="); Serial.println(gz);
+
+  delay(500);
+}
+```
+
+到这里，我判断这一步已经跑通，主要看三条依据，而且它们能互相对上：
+
+- I2C 扫描找到了 `0x68`
+- `WHO_AM_I` 读出来也是 `0x68`
+- 串口开始持续输出 `ACC / TEMP_RAW / GYRO` 这些原始数据项
+
+这比单纯“库函数没报错”要踏实得多。因为到这里，设备存在、设备身份、寄存器访问、数据输出这几层已经能串起来了。
+
+## 再往前一步：把读数整理成第一个 sensor 模块雏形
+
+原始笔记写到这里，我也没有直接收手，而是顺手往前推了一步：把“已经能读到数”这件事，开始往项目里的第一个 `sensor` 模块雏形上收。
+
+原因也很现实。后面这个项目不可能一直停留在“串口里有数就行”。如果还把传感器读取逻辑散在 `loop()` 里到处写，后面任务一多、日志一多、检查逻辑一加，代码很快就散掉了。所以我这里先把数据结构、初始化和读取动作收口。
+
+文档最后一版里，完整保留下来的核心接口是这些：
+
+```cpp
+struct SensorFrame {
+  int16_t ax;
+  int16_t ay;
+  int16_t az;
+  int16_t tempRaw;
+  int16_t gx;
+  int16_t gy;
+  int16_t gz;
+  bool online;
+};
+
+bool sensorInit() {
+  Wire.begin(21, 22);
+
+  uint8_t whoami = readRegister(REG_WHO_AM_I);
+  Serial.print("WHO_AM_I = 0x");
+  Serial.println(whoami, HEX);
+
+  if (whoami != 0x68) {
+    return false;
+  }
+
+  writeRegister(REG_PWR_MGMT_1, 0x00);
+  delay(100);
+
+  return true;
+}
+
+SensorFrame sensorReadFrame() {
+  SensorFrame frame;
+
+  frame.ax = readInt16(0x3B);
+  frame.ay = readInt16(0x3D);
+  frame.az = readInt16(0x3F);
+  frame.tempRaw = readInt16(0x41);
+  frame.gx = readInt16(0x43);
+  frame.gy = readInt16(0x45);
+  frame.gz = readInt16(0x47);
+
+  frame.online = true;
+  return frame;
+}
+
+void printFrame(const SensorFrame& frame) {
+  if (!frame.online) {
+    Serial.println("[SENSOR] offline");
+    return;
+  }
+
+  Serial.print("[SENSOR] ");
+  Serial.print("ax="); Serial.print(frame.ax);
+  Serial.print(" ay="); Serial.print(frame.ay);
+  Serial.print(" az="); Serial.print(frame.az);
+
+  Serial.print(" | tempRaw="); Serial.print(frame.tempRaw);
+
+  Serial.print(" | gx="); Serial.print(frame.gx);
+  Serial.print(" gy="); Serial.print(frame.gy);
+  Serial.print(" gz="); Serial.println(frame.gz);
+}
+```
+
+Word 原文里的这一版 `setup()` 结尾多出了一个残缺字符，所以我这里没有机械把整段原样贴满，而是保留了结构完整、最能说明思路的几个接口。
+
+这几步一拆开，后面再往上搭就顺了很多：
+
+- `struct SensorFrame`：把散落的 7 个原始变量收成一帧，后面日志、任务通信、诊断读取都更像是在处理一个完整的数据对象
+- `sensorInit()`：把身份确认、唤醒和后续可能追加的状态检查收在一起，后面要加错误日志和配置检查也更自然
+- `sensorReadFrame()`：把读取动作单独收口，后面如果要加范围检查、一致性检查、失联检测、时间戳、错误计数，也有明确的入口
+
+从实验台的角度看，这一步其实还挺关键。因为以后如果我要做“非安全版直接信任输入”和“安全版增加状态检查、异常日志、失联处理”的对比，底下得先有一个像样的入口，不然逻辑一散开，很多事情就不好比了。
+
+## 这一步为什么值
+
+Day 2 做到这里，我手里拿到的已经不只是一个“串口里有数在跳”的小演示了，而是一条最基本的输入链已经能自己站住：
+
+- 供电路径已经确认
+- 串口下载和日志路径已经确认
+- I2C 总线能找到设备
+- 设备身份寄存器读得通
+- 原始加速度、温度、陀螺仪数据能持续进入系统
+
+这也是后面 `sensor task / diag task / storage task / log task` 能继续往前走的前提。没有这一步，后面很多上层逻辑看起来像是在运行，实际上你并不知道它吃进去的输入到底是真是假、稳不稳定，问题又是从哪一层开始偏掉的。
+
+## 这一步我会提醒自己别踩的坑
+
+- 先别急着上 `5V`，Day 2 的第一轮连接里用 `3V3 -> VCC` 更稳妥
+- `GND -> GND` 一定要先确认，共地不是形式主义
+- `SCL` 和 `SDA` 接反时，表面上像是“代码没反应”，本质上是总线根本没通
+- 先让串口自己开口说话，再谈 I2C 和传感器，不然排错层次会混在一起
+- 先扫地址，再读寄存器，比上来就怀疑一大段驱动代码要高效得多
+- 能跑出原始值之后，最好立刻开始收口成结构化接口，不然后面代码会很快散掉
+
+## 收个尾
+
+Day 2 先收在这里刚好。我已经把 ESP32 和 MPU6050 的最小闭环跑通了，也拿到了这套实验台里的第一份真实 IMU 输入。更重要的是，我把供电、串口、I2C、寄存器访问这几层顺着理了一遍，没有急着把后面的东西一口气全塞进来。
+
+下一步我会继续往 `sensor task` 那边推进，把现在这个 `sensor` 雏形接进更完整的任务结构里。到那时候，重点就不只是“能打印原始值”了，而是让它慢慢变成一个能被上层稳定消费、能做异常判断、也能留下诊断信息的输入模块。
+
+如果这篇博客对你有帮助，请点击下方按钮，来到我的github主页点个赞吧
+
+<img src="/static/images/like.png" alt="like" width="700" />
