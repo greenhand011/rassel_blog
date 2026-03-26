@@ -1,0 +1,445 @@
+---
+title: 'ADAS ECU 实验台 Day 3：先别急着上 RTOS，给 sensor 模块补上第一层安全感知'
+date: '2026-03-26'
+tags: ['Embedded']
+draft: false
+summary: 'Day 2 我只是把 ESP32 和 MPU6050 的最小链路跑通了。Day 3 先不急着继续堆任务，而是给 sensor 模块补上最基础的自知能力：它得知道自己是在线、读失败，还是读到了看起来就不可信的数据。'
+---
+
+Day 2 我已经把 ESP32 和 MPU6050 的最小链路跑通了，串口里能稳定看到 `ax / ay / az / gx / gy / gz` 这些原始值。功能上看，这一步已经算通了。
+
+但我这里没有急着往后堆 `sensor task`、`diag task` 或者更复杂的调度逻辑。原因很简单：在真实 ECU 里，“能读到一次”远远不够。系统真正关心的是另一层事情：这个传感器现在还在不在线，这一帧到底能不能用，如果坏了，模块自己能不能先把状态讲清楚。
+
+所以 Day 3 我给自己定的任务，不是把模块做得更花，而是先让它有最基础的自知能力。先知道自己是不是在线，再判断这帧数据是不是明显不对，最后开始记录连续故障的趋势。这样后面再往上接任务和诊断，底下的输入边界才算有点样子。
+
+## 今天这一步到底要补什么
+
+如果只用一句话概括 Day 3 的工作，那就是：
+
+> 不再只让 sensor 模块“产出数值”，而是开始让它同时产出“这份数值当前可不可信”。
+
+我这里实际补的是三层东西：
+
+- 在线状态判断：模块能区分 `SENSOR_OK / SENSOR_OFFLINE / SENSOR_READ_FAIL`
+- 最小异常值判断：模块能把“在线但很可疑”的数据标成 `SENSOR_DATA_ABNORMAL`
+- 故障计数：模块开始记录累计失败、连续失败、连续离线
+
+这一步放在 Day 3 很合适。因为 Day 2 已经证明了最小读数链路能跑通，现在刚好可以顺着这条链往前推进一层，让模块先学会汇报自己的健康状态。
+
+<img
+  src="/static/images/ADAS/adas-day3-sensor-module-02-security-logic-overview.png"
+  alt="Day 3 的 sensor 模块逻辑总览，包括初始化、在线检查、异常判断和健康计数"
+  width="700"
+/>
+
+这张图基本把 Day 3 的思路收得很完整：初始化不再只是把芯片唤醒，读一帧数据也不再只是把寄存器搬出来，而是顺手把在线状态、异常状态和计数逻辑都挂上了。
+
+## 为什么 Day 3 先做这个
+
+我这里先补这一层，不是因为它“高级”，而是因为它很基础。
+
+如果没有在线判断和异常判断，后面会很容易出现这种情况：
+
+- I2C 线松了，但系统还拿着旧值继续跑
+- 传感器掉电了，但上层逻辑还以为自己读到了正常输入
+- 总线没完全断，回来的却是一帧垃圾值，但模块没有把它识别成故障
+
+这类问题放在真实 ECU 里都很麻烦。因为它不是“程序挂了”这种一眼能看出来的错误，而是输入源已经开始失真，但系统自己没有意识到。
+
+所以我这里不想一上来就做很复杂的安全策略，而是先把最朴素的一层补上：模块先知道自己是不是还活着，读回来的这一帧至少是不是像样。
+
+## 第一层：先让模块知道自己是不是还在线
+
+### 先别只盯数值，先给模块一个状态
+
+原始笔记里第一步很直接，就是先把状态枚举加上：
+
+```cpp
+enum SensorStatus {
+  SENSOR_OK = 0,
+  SENSOR_OFFLINE,
+  SENSOR_READ_FAIL
+};
+
+struct SensorFrame {
+  int16_t ax;
+  int16_t ay;
+  int16_t az;
+  int16_t tempRaw;
+  int16_t gx;
+  int16_t gy;
+  int16_t gz;
+
+  SensorStatus status;
+  bool valid;
+};
+```
+
+我很认同这种改法。因为从这一步开始，`SensorFrame` 就不再只是“7 个原始值拼在一起”，而是多了一层状态表达。
+
+也就是说，后面任何上层模块再拿到一帧数据，都不能默认“有值就能用”，而是得同时看：
+
+- `status`
+- `valid`
+
+到这里，“有数据”和“数据可用”已经不再是一回事了。
+
+### 在线判断先用最稳的办法：读 WHO_AM_I
+
+Day 3 这里没有搞很复杂的探测方式，而是先用了最稳的一种：去读 `WHO_AM_I` 寄存器。
+
+对 MPU6050 来说，这个寄存器地址是 `0x75`，正常期望值是 `0x68`。文档最后一版又顺手兼容了 `MPU6500` 的 `0x70`，所以最终判断写成了同时接受 `0x68 / 0x70`。
+
+```cpp
+#define MPU_ADDR 0x68
+
+#define REG_PWR_MGMT_1   0x6B
+#define REG_WHO_AM_I     0x75
+
+#define WHOAMI_MPU6050 0x68
+#define WHOAMI_MPU6500 0x70
+
+bool readRegister(uint8_t reg, uint8_t &value) {
+  Wire.beginTransmission(MPU_ADDR);
+  Wire.write(reg);
+  if (Wire.endTransmission(false) != 0) return false;
+
+  uint8_t count = Wire.requestFrom((uint8_t)MPU_ADDR, (uint8_t)1);
+  if (count != 1) return false;
+
+  value = Wire.read();
+  return true;
+}
+
+bool sensorIsOnline() {
+  uint8_t whoami = 0;
+  if (!readRegister(REG_WHO_AM_I, whoami)) return false;
+
+  return (whoami == WHOAMI_MPU6050 || whoami == WHOAMI_MPU6500);
+}
+```
+
+我这里喜欢这套写法的原因也很简单：它不靠猜，不靠“这次读出来好像有数”，而是先问芯片自己一句，“你到底是不是你”。这一步先过，后面再谈读值。
+
+### sensorReadFrame() 也不能再默认“一读就成功”
+
+Day 2 的版本里，`sensorReadFrame()` 更像是一个寄存器搬运函数。到了 Day 3，这里才开始像一个真正的输入模块入口。
+
+原始笔记的核心逻辑是这样的：
+
+```cpp
+SensorFrame sensorReadFrame() {
+  SensorFrame frame;
+
+  frame.ax = 0;
+  frame.ay = 0;
+  frame.az = 0;
+  frame.tempRaw = 0;
+  frame.gx = 0;
+  frame.gy = 0;
+  frame.gz = 0;
+  frame.status = SENSOR_OFFLINE;
+  frame.valid = false;
+
+  if (!sensorIsOnline()) {
+    return frame;
+  }
+
+  frame.status = SENSOR_READ_FAIL;
+
+  if (!readInt16(0x3B, frame.ax)) return frame;
+  if (!readInt16(0x3D, frame.ay)) return frame;
+  if (!readInt16(0x3F, frame.az)) return frame;
+  if (!readInt16(0x41, frame.tempRaw)) return frame;
+  if (!readInt16(0x43, frame.gx)) return frame;
+  if (!readInt16(0x45, frame.gy)) return frame;
+  if (!readInt16(0x47, frame.gz)) return frame;
+
+  frame.status = SENSOR_OK;
+  frame.valid = true;
+  return frame;
+}
+```
+
+这段代码看起来没有多炫，但思路已经很像样了：
+
+- 默认先当作 `OFFLINE`
+- 能确认在线后，再把状态推到 `READ_FAIL`
+- 全部原始值都读成功，才最终变成 `OK`
+
+我这里特别喜欢这种“先给保守默认值，再一步一步往上确认”的写法。因为它天然就比“先假设一切正常”更适合后面做安全处理。
+
+## 第二层：在线还不够，数据也得先像话
+
+模块到了这一步，已经能回答“自己在不在线”了。但真实系统里，在线不等于数据可信。
+
+我这里接着补的，就是最小异常值判断。原始笔记里先挑了两类最保守、最不容易误伤的异常：
+
+- 全 0 异常
+- 接近 `int16_t` 极限的饱和异常
+
+这两个规则都不复杂，但很实用。因为它们主要抓的不是“细微偏差”，而是那种一眼就不太像真实物理数据的情况。
+
+### 先给状态多留一个出口
+
+状态枚举先扩成这样：
+
+```cpp
+enum SensorStatus {
+  SENSOR_OK = 0,
+  SENSOR_OFFLINE,
+  SENSOR_READ_FAIL,
+  SENSOR_DATA_ABNORMAL
+};
+```
+
+这样一来，模块就不只会回答“读没读到”，还能回答“读到了，但我不建议你把这帧当正常输入”。
+
+### 异常判断先从最保守的规则开始
+
+原始文档里的判断函数是这样的：
+
+```cpp
+bool sensorFrameLooksAbnormal(const SensorFrame &frame) {
+  // 全 0 异常
+  if (frame.ax == 0 &&
+      frame.ay == 0 &&
+      frame.az == 0 &&
+      frame.tempRaw == 0 &&
+      frame.gx == 0 &&
+      frame.gy == 0 &&
+      frame.gz == 0) {
+    return true;
+  }
+
+  // 饱和异常
+  if (frame.ax >= 32000 || frame.ax <= -32000) return true;
+  if (frame.ay >= 32000 || frame.ay <= -32000) return true;
+  if (frame.az >= 32000 || frame.az <= -32000) return true;
+  if (frame.tempRaw >= 32000 || frame.tempRaw <= -32000) return true;
+  if (frame.gx >= 32000 || frame.gx <= -32000) return true;
+  if (frame.gy >= 32000 || frame.gy <= -32000) return true;
+  if (frame.gz >= 32000 || frame.gz <= -32000) return true;
+
+  return false;
+}
+```
+
+我这里觉得这一步拿捏得比较稳。它没有一上来就做很激进的物理模型判断，也没有凭空给出一堆复杂阈值，而是先抓最明显的异常。对 Day 3 来说，这个节奏是对的。
+
+接着，在 `sensorReadFrame()` 里多加这一层分支：
+
+```cpp
+if (sensorFrameLooksAbnormal(frame)) {
+  frame.status = SENSOR_DATA_ABNORMAL;
+  frame.valid = false;
+  return frame;
+}
+
+frame.status = SENSOR_OK;
+frame.valid = true;
+return frame;
+```
+
+这样模块的输出语义就更完整了：
+
+- `OFFLINE`：连人都没找到
+- `READ_FAIL`：人还在，但这次没把话说完整
+- `DATA_ABNORMAL`：话是听到了，但内容本身就很可疑
+- `OK`：这帧目前看起来可以往上交
+
+## 第三层：别只盯一帧，开始数故障
+
+做到这里，其实已经比 Day 2 进了一大步。但还不够，因为这些判断都还是“单帧判断”。
+
+真实 ECU 不会只盯着一帧看。系统更关心的是：这到底是偶发抖动，还是正在进入连续故障状态。
+
+比如：
+
+- 偶尔一次 `READ_FAIL`，可能只是总线抖了一下
+- 连续很多次 `READ_FAIL`，那就更像真实故障了
+
+所以 Day 3 最后又往前补了一层：开始记录失败计数和连续故障计数。
+
+### 先给模块一个最小健康结构体
+
+原始笔记里的结构体很直接：
+
+```cpp
+struct SensorHealth {
+  uint32_t totalReadFail;
+  uint32_t consecutiveFail;
+  uint32_t consecutiveOffline;
+};
+
+SensorHealth g_health = {0, 0, 0};
+```
+
+从这一步开始，模块开始不只报告“这一帧怎么样”，还开始积累“最近一段时间怎么样”。
+
+### 计数更新逻辑才是 Day 3 的核心
+
+我这里最看重的，其实是这部分逻辑。因为它把离线、读取失败、数据异常和真正成功这几种状态都拉进了同一套健康计数里。
+
+原始文档最后一版的核心判断顺序大概是这样：
+
+```cpp
+SensorFrame sensorReadFrame() {
+  SensorFrame frame;
+
+  frame.ax = 0;
+  frame.ay = 0;
+  frame.az = 0;
+  frame.tempRaw = 0;
+  frame.gx = 0;
+  frame.gy = 0;
+  frame.gz = 0;
+  frame.status = SENSOR_OFFLINE;
+  frame.valid = false;
+
+  // OFFLINE
+  if (!sensorIsOnline()) {
+    g_health.consecutiveOffline++;
+    g_health.consecutiveFail++;
+    g_health.totalReadFail++;
+    return frame;
+  }
+
+  frame.status = SENSOR_READ_FAIL;
+
+  // 逐项读取
+  if (!readInt16(0x3B, frame.ax)) goto READ_FAIL;
+  if (!readInt16(0x3D, frame.ay)) goto READ_FAIL;
+  if (!readInt16(0x3F, frame.az)) goto READ_FAIL;
+  if (!readInt16(0x41, frame.tempRaw)) goto READ_FAIL;
+  if (!readInt16(0x43, frame.gx)) goto READ_FAIL;
+  if (!readInt16(0x45, frame.gy)) goto READ_FAIL;
+  if (!readInt16(0x47, frame.gz)) goto READ_FAIL;
+
+  // 异常判断
+  if (sensorFrameLooksAbnormal(frame)) {
+    g_health.consecutiveFail++;
+    g_health.totalReadFail++;
+
+    frame.status = SENSOR_DATA_ABNORMAL;
+    frame.valid = false;
+    return frame;
+  }
+
+  // 成功
+  frame.status = SENSOR_OK;
+  frame.valid = true;
+
+  g_health.consecutiveFail = 0;
+  g_health.consecutiveOffline = 0;
+
+  return frame;
+
+READ_FAIL:
+  g_health.consecutiveFail++;
+  g_health.totalReadFail++;
+  return frame;
+}
+```
+
+这里面有两个点我觉得特别关键：
+
+- `OFFLINE` 也算失败，所以会同时推动 `consecutiveOffline` 和 `consecutiveFail`
+- 真正成功时，会把连续失败和连续离线清零
+
+这就意味着模块已经不再只是“报状态”，而是在慢慢形成一种故障趋势感知。后面你想拿它去做诊断报码、日志记录、甚至简单降级判断，就有抓手了。
+
+### 打印出来的就不只是传感器值了
+
+到 Day 3 的最后，`printFrame()` 打出来的东西也变了。它不再只是 `ax / ay / az`，而是连着状态和计数一起打印：
+
+```cpp
+void printFrame(const SensorFrame &frame) {
+  Serial.print("[SENSOR] status=");
+  Serial.print(statusToString(frame.status));
+
+  Serial.print(" valid=");
+  Serial.print(frame.valid ? "true" : "false");
+
+  Serial.print(" failCnt=");
+  Serial.print(g_health.totalReadFail);
+
+  Serial.print(" consecFail=");
+  Serial.print(g_health.consecutiveFail);
+
+  Serial.print(" consecOff=");
+  Serial.print(g_health.consecutiveOffline);
+
+  if (!frame.valid) {
+    Serial.println();
+    return;
+  }
+
+  Serial.print(" | ax="); Serial.print(frame.ax);
+  Serial.print(" ay="); Serial.print(frame.ay);
+  Serial.print(" az="); Serial.print(frame.az);
+
+  Serial.print(" | tempRaw="); Serial.print(frame.tempRaw);
+
+  Serial.print(" | gx="); Serial.print(frame.gx);
+  Serial.print(" gy="); Serial.print(frame.gy);
+  Serial.print(" gz="); Serial.println(frame.gz);
+}
+```
+
+这时候模块输出的就不只是“我读到了什么”，而是“我现在是什么状态、这帧能不能用、最近是不是在连续出问题”。
+
+## 到这里怎么判断 Day 3 真的做成了
+
+Day 3 做完以后，我不会只盯着原始值看，而是更关心串口里状态字段和计数是不是跟着逻辑一起工作。
+
+文档里保留下来的这张运行截图，就是一个比较理想的结果：
+
+<img
+  src="/static/images/ADAS/adas-day3-sensor-module-01-runtime-status-output.png"
+  alt="Day 3 运行结果，串口输出同时包含 status、valid 和 IMU 原始数据"
+  width="700"
+/>
+
+像这样看到：
+
+- `status=OK`
+- `valid=true`
+- 后面继续跟着 `ax / ay / az / tempRaw / gx / gy / gz`
+
+至少说明这几件事已经同时成立了：
+
+- 模块能判断在线状态
+- 模块能在成功路径下把状态收成 `OK`
+- 数据帧和状态信息已经一起对外输出
+
+当然，到这里还不能说整个 sensor 模块已经“很完善”了。它只是从 Day 2 的“能读到数”，推进到了 Day 3 的“开始知道这份数是不是该信”。这两者差别其实挺大的。
+
+## 这一步在整个实验台里的位置
+
+我这里刻意把 Day 3 收在这一步，没有急着上 RTOS，是因为这层事情必须先理顺。
+
+如果底下的 sensor 模块自己都还不知道：
+
+- 是不是在线
+- 这次是读失败还是数据异常
+- 失败是在偶发还是已经连续发生
+
+那你后面不管接 `sensor task`、`diag task` 还是 `log task`，很多信息都会飘。上层看起来有架构，底下却还没有一个像样的输入边界。
+
+反过来讲，Day 3 先把这层补上，后面很多事情就顺了：
+
+- `diag task` 才有明确状态可以上报
+- `log task` 才能记录“什么时候开始掉线、什么时候恢复”
+- 更上层的控制逻辑，才有机会在输入异常时走向保守路径
+- 后面想做 fail-safe 或更正式的 DTC，也终于有了最初的计数依据
+
+## 收个尾
+
+Day 3 做完，我手里的 sensor 模块已经不是一个单纯“把寄存器数值抄出来”的小工具了。它开始能回答几个更像 ECU 风格的问题：我还在不在线，这一帧能不能信，最近是不是在连续出故障。
+
+这一步还远远不是终点，但它很关键。因为从这里开始，后面的工作重点就不再只是“把数据读出来”，而是怎么把这份输入慢慢接进 `sensor task`、接进诊断、接进日志，再往真正的安全处理和异常响应继续推进。
+
+如果这篇博客对你有帮助，请点击下方按钮，来到我的github主页点个赞吧
+
+<img src="/static/images/like.png" alt="like" width="700" />
