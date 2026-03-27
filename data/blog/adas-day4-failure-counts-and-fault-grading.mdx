@@ -1,0 +1,357 @@
+---
+title: 'ADAS ECU 实验台 Day 4：给 sensor 模块补上失败计数和故障分级'
+date: '2026-03-27'
+tags: ['Embedded']
+draft: false
+summary: 'Day 4 不再只盯单帧状态，而是把失败计数、连续离线和故障等级接进 sensor 模块，让它开始能向上层说清楚故障趋势，而不是只会吐一串看起来正常的日志。'
+---
+
+Day 3 我已经把 sensor 模块的第一层安全感知补起来了，它至少开始知道自己是在线、读失败，还是拿到了明显不对的值。
+
+但我这里没有打算就此停住。因为在真实 ECU 里，单帧判断还是不够。模块今天读到一次异常，不代表系统已经坏掉了；反过来，连续很多次失败，也不能继续当成“偶发抖动”看待。Day 4 要补的，就是这中间那层更像工程系统的东西：失败计数、连续故障和故障分级。
+
+我这里还是不想一上来就堆 RTOS 或更复杂的任务架构。先把 sensor 模块自身的输出收敛好，让它不只是“能读”，而是“能说清楚自己现在是什么状态、最近有没有在连续出问题”。这一步做好了，后面 `diag task`、`log task`、`comm task` 才有稳定的输入。
+
+## 今天先补什么
+
+如果把 Day 4 压成一句话，那就是：
+
+> 我不再只让 sensor 模块给人看日志，而是让它开始输出给系统用的结构化状态。
+
+这一层会补三件事：
+
+- 把状态从“打印字符串”变成“结构化输出”
+- 把失败计数真正接到读数逻辑里
+- 把连续故障映射成明确的 `faultLevel`
+
+这一步的节奏其实很重要。因为我这里不是在做一个“看起来很完整”的 demo，而是在给后面更像 ECU 的分层留接口。
+
+<img
+  src="/static/images/ADAS/adas-day4-ecu-testbed-architecture.png"
+  alt="ADAS ECU 基础软件安全实验台的分层示意图，展示 sensor 初始化、故障检测和控制更新之间的关系"
+  width="700"
+/>
+
+这张图大概就是 Day 4 想往前推的方向。sensor 这层不再只是自己吐值，而是开始往安全检查、故障检测和后续控制流里送结构化信息。
+
+## 为什么不能只靠字符串
+
+前一版代码里，我已经能在串口里看到类似这样的输出：
+
+```text
+[SENSOR] status=OK valid=true failCnt=3 consecFail=1 consecOff=0
+```
+
+这类日志给人看当然没问题，但我这里很快就意识到一个挺典型的“伪工程问题”：**现在的输出是给人看的，不是给系统用的。**
+
+如果后面要接 `diag task`、`log task`、`comm task`，这些模块不会真的去解析一长串字符串。它们更需要的是结构化数据，不然很容易变成下面这种局面：
+
+- 每个模块都自己解析字符串
+- 解析逻辑散落得到处都是
+- 字段一多，错误就开始变得很隐蔽
+
+所以 Day 4 先做的事情，不是把日志打印得更花，而是把 sensor 的对外输出改成更像 ECU 的结构化数据。
+
+## 先把状态“结构化输出”
+
+### 先把对外输出和内部读数拆开
+
+原始笔记里第一步做的是：在 `SensorFrame` 之外，再补一个更适合对外传递的 `SensorReport`。
+
+```cpp
+struct SensorFrame {
+  int16_t ax;
+  int16_t ay;
+  int16_t az;
+  int16_t tempRaw;
+  int16_t gx;
+  int16_t gy;
+  int16_t gz;
+
+  SensorStatus status;
+  bool valid;
+};
+
+struct SensorReport {
+  SensorStatus status;
+  bool valid;
+
+  int16_t ax;
+  int16_t ay;
+  int16_t az;
+
+  int16_t gx;
+  int16_t gy;
+  int16_t gz;
+
+  int16_t tempRaw;
+
+  uint32_t totalReadFail;
+  uint32_t consecutiveFail;
+  uint32_t consecutiveOffline;
+};
+```
+
+我这里很喜欢这一步的原因很简单：它把“内部怎么读”跟“对外怎么说”拆开了。
+
+`SensorFrame` 更像模块内部的采样结果，`SensorReport` 则是往上层抛出去的报告。后面如果 `diag task` 或 `comm task` 要用，拿 `SensorReport` 会比从串口字符串里抠字段稳很多。
+
+这也是为什么这里用了 `buildSensorReport(const SensorFrame& frame)`。`const SensorFrame&` 的意思很直白：这帧数据只是被借来组装报告，不需要复制，也不应该被函数偷偷改掉。
+
+### 给健康状态单独留一个结构
+
+失败计数不是临时变量，而是模块健康的一部分，所以我这里把它们单独收进了 `SensorHealth`：
+
+```cpp
+struct SensorHealth {
+  uint32_t totalReadFail;
+  uint32_t consecutiveFail;
+  uint32_t consecutiveOffline;
+};
+
+SensorHealth g_health = {0, 0, 0};
+```
+
+这一步看起来很普通，但很关键。因为从这里开始，sensor 模块就不只是“这一帧怎么了”，而是开始记录“最近一段时间到底发生了什么”。
+
+### 把报告拼出来
+
+`buildSensorReport()` 做的事很朴素，就是把当前帧和健康计数拼成一个完整报告：
+
+```cpp
+SensorReport buildSensorReport(const SensorFrame& frame) {
+  SensorReport r;
+
+  r.status = frame.status;
+  r.valid = frame.valid;
+
+  r.ax = frame.ax;
+  r.ay = frame.ay;
+  r.az = frame.az;
+
+  r.gx = frame.gx;
+  r.gy = frame.gy;
+  r.gz = frame.gz;
+
+  r.tempRaw = frame.tempRaw;
+
+  r.totalReadFail = g_health.totalReadFail;
+  r.consecutiveFail = g_health.consecutiveFail;
+  r.consecutiveOffline = g_health.consecutiveOffline;
+
+  return r;
+}
+```
+
+我这里没有把它写得很花，因为它本质上就是一个“把内部状态收口给外部”的函数。真正重要的是：从这一步开始，输出是结构化的，不再只是给人看的字符串。
+
+<img
+  src="/static/images/ADAS/adas-day4-failure-threshold-table.png"
+  alt="连续失败次数和 ECU 故障判断的对应表，展示 1 次忽略、3 次 WARNING、10 次 ERROR、离线 5 次 CRITICAL"
+  width="700"
+/>
+
+这张表说明的不是“阈值看起来整齐”，而是模块已经开始把失败趋势往故障等级上收了。
+
+## 把失败计数接到真实逻辑里
+
+Day 4 真正的重点，其实不是多写几个计数变量，而是让这些计数真的被更新起来。
+
+如果计数变量只是放在那里，永远都是 0，那它就没有工程意义。系统会继续以为“只是偶发问题”，根本进不到故障状态里。
+
+### 失败计数要跟着真实分支走
+
+文档里这部分改得很明确。我这里保留核心逻辑：
+
+```cpp
+SensorFrame sensorReadFrame() {
+  SensorFrame frame = {0};
+  frame.status = SENSOR_OFFLINE;
+  frame.valid = false;
+
+  if (!sensorIsOnline()) {
+    g_health.consecutiveOffline++;
+    g_health.consecutiveFail++;
+    g_health.totalReadFail++;
+    return frame;
+  }
+
+  frame.status = SENSOR_READ_FAIL;
+
+  if (!readInt16(0x3B, frame.ax)) goto fail;
+  if (!readInt16(0x3D, frame.ay)) goto fail;
+  if (!readInt16(0x3F, frame.az)) goto fail;
+  if (!readInt16(0x41, frame.tempRaw)) goto fail;
+  if (!readInt16(0x43, frame.gx)) goto fail;
+  if (!readInt16(0x45, frame.gy)) goto fail;
+  if (!readInt16(0x47, frame.gz)) goto fail;
+
+  if (sensorFrameLooksAbnormal(frame)) {
+    g_health.consecutiveFail++;
+    g_health.totalReadFail++;
+    frame.status = SENSOR_DATA_ABNORMAL;
+    return frame;
+  }
+
+  frame.status = SENSOR_OK;
+  frame.valid = true;
+  g_health.consecutiveFail = 0;
+  g_health.consecutiveOffline = 0;
+  return frame;
+
+fail:
+  g_health.consecutiveFail++;
+  g_health.totalReadFail++;
+  return frame;
+}
+```
+
+这段逻辑我觉得很像 ECU 里该有的样子，因为它不是在问“这一帧长得漂不漂亮”，而是在问“这次失败有没有被系统记录下来，连续失败有没有真的累积起来”。
+
+我这里还挺在意一个细节：成功时要把 `consecutiveFail` 和 `consecutiveOffline` 清零。这个动作看起来很小，但它很关键。因为它意味着系统不是把故障当成永久标签，而是能在恢复以后重新回到正常状态。
+
+### 先看结果，再看计数到底有没有生效
+
+文档里列了几种很典型的观察结果，我这里整理成更直观的样子：
+
+- 正常情况：`status=OK valid=true failCnt=0 consecFail=0 consecOff=0`
+- 偶尔轻碰线：`failCnt` 会开始涨，但 `consecFail` 可能只冒一下
+- 故意制造离线，比如拔掉 `SDA` 或 `SCL`：`status` 会掉到 `OFFLINE`，`consecOff` 会持续增长
+
+这一步的意义很实在。因为只有当你真的去碰线、断线、恢复连接时，你才知道计数逻辑不是摆设。
+
+## 把计数抬成故障等级
+
+有了计数之后，下一个问题就自然来了：系统怎么知道这算不算严重问题？
+
+真实 ECU 一般不会直接拿计数去做判断，而是会把计数映射成故障等级。Day 4 里这一步也是这样处理的。
+
+### 先定义等级
+
+```cpp
+enum FaultLevel {
+  FAULT_NONE = 0,
+  FAULT_WARNING,
+  FAULT_ERROR,
+  FAULT_CRITICAL
+};
+```
+
+这个等级不是为了“看起来更专业”，而是为了把趋势变成可以给上层直接消费的决策信息。
+
+### 当前阈值是怎么定的
+
+文档里的阈值我整理成下面这样：
+
+| 连续失败  | ECU 判断   |
+| --------- | ---------- |
+| 1 次      | 忽略       |
+| 3 次      | `WARNING`  |
+| 10 次     | `ERROR`    |
+| 离线 5 次 | `CRITICAL` |
+
+这套阈值我理解为一个很典型的早期保守策略：轻微抖动先不打扰系统，连续出问题再慢慢升高等级，离线到一定程度就直接进入严重故障。
+
+### 故障判断函数
+
+```cpp
+FaultLevel evaluateFault(const SensorHealth& h) {
+  if (h.consecutiveOffline >= 5) {
+    return FAULT_CRITICAL;
+  }
+
+  if (h.consecutiveFail >= 10) {
+    return FAULT_ERROR;
+  }
+
+  if (h.consecutiveFail >= 3) {
+    return FAULT_WARNING;
+  }
+
+  return FAULT_NONE;
+}
+```
+
+这里的判断顺序也挺合理。离线是最严重的信号，所以优先级最高；连续失败次之；没到阈值之前，就先维持 `NONE`。
+
+### 把故障等级塞回报告
+
+`SensorReport` 里最后再加一个字段：
+
+```cpp
+struct SensorReport {
+  SensorStatus status;
+  bool valid;
+
+  int16_t ax, ay, az;
+  int16_t gx, gy, gz;
+  int16_t tempRaw;
+
+  uint32_t totalReadFail;
+  uint32_t consecutiveFail;
+  uint32_t consecutiveOffline;
+
+  FaultLevel faultLevel;
+};
+```
+
+然后在 `buildSensorReport()` 里接上：
+
+```cpp
+r.faultLevel = evaluateFault(g_health);
+```
+
+这样一来，上层拿到的就不是单纯的“读数 + 计数”，而是完整的“状态 + 趋势 + 决策”。
+
+<img
+  src="/static/images/ADAS/adas-day4-sensor-layer-implementation.png"
+  alt="sensor 模块当前实现的四层映射图，分别对应输入、状态、趋势和决策"
+  width="700"
+/>
+
+这张表我很喜欢，因为它把现在的实现说得很直白：
+
+- 输入是 `SensorFrame`
+- 状态是 `status`
+- 趋势是 `consecutiveFail`
+- 决策是 `faultLevel`
+
+这就是我想要的 sensor 分层雏形。
+
+## 为什么这一步值得做
+
+Day 4 做完以后，sensor 模块就不再只是“我读到了什么”，而是开始能回答：
+
+- 我现在还在线吗
+- 这一帧能不能信
+- 最近是不是在连续出问题
+- 这件事现在该按什么等级看
+
+这几个问题比单纯输出原始值更接近 ECU 的实际需求。因为真正的系统不是只关心“读没读到”，而是关心“这份输入现在处于什么健康状态”。
+
+我这里把它叫作第一层故障感知，是因为它还没到完整诊断那一步，但已经从“功能正确”往“状态可控”走了一大截。
+
+## 这一步在 ECU 里的位置
+
+Day 4 最后那张架构图，其实就是我理解这一步位置的方式。
+
+`sensor` 这一层往上，不应该直接把字符串抛给诊断、通信或者控制模块，而应该先把结构化报告、状态和故障等级准备好。这样后面的分层才不会互相缠死。
+
+你可以把它理解成这样：
+
+- `Sensor_Init` 负责把传感器拉起来
+- `Read_Sensor_Data` 负责采样
+- `Fault_Detection` 负责把趋势和异常抬成故障
+- `System_Action` 才是真正执行降级或保护动作的地方
+
+这也是我为什么不急着把 Day 4 写成一个很大的框架工程。现在最重要的不是控制逻辑，而是先把输入和故障信息整理清楚。
+
+## 收个尾
+
+Day 4 收完以后，我手里的 sensor 模块又往前走了一步。它现在不只是会读数，还开始会把失败、离线、异常和故障等级讲清楚了。
+
+这一步还不是终点，但它很关键。因为后面一旦要接 `diag task`、`log task` 或更上层的安全响应，底下已经有了能说话的结构化输入，不会再只是靠一串串串口字符串硬猜。
+
+如果这篇博客对你有帮助，请点击下方按钮，来到我的github主页点个赞吧
+
+<img src="/static/images/like.png" alt="like" width="700" />
