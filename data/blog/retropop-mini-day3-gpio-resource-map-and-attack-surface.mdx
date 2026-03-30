@@ -1,0 +1,181 @@
+---
+title: 'RetroPop Mini 开发日志 #03：先画 GPIO 资源图，再谈输入入口分级'
+date: '2026-3-30'
+tags: ['Embedded', 'RetroPop Mini', 'IoT Security']
+draft: false
+summary: 'Day3 不是单纯多接两个按钮，而是开始认真整理 GPIO 资源、收窄输入入口、保留恢复与调试能力。真正的“减小攻击面”，从这一步才算起步。'
+---
+
+Day3 做的事情表面上很朴素: 给设备补上 `Enter` 和 `Back` 两个按钮。
+
+但我越往下写，越发现这一章的重点其实不在“多两个输入”，而在“开始像做一个设备那样思考”。因为一旦你把按钮、串口、启动脚、调试脚、Flash 相关引脚放进同一张图里，事情就会变得清楚很多:
+
+**不是所有 GPIO 都一样，也不是所有输入都该被当成等价入口。**
+
+## 今天到底在做什么
+
+这一章的核心目标有两个。
+
+第一，把 `Enter` 和 `Back` 这两个动作从“临时输入”变成“正式行为”。
+
+第二，给整个项目做一张更现实的 GPIO 资源图，明确哪些脚能用、哪些脚别碰、哪些脚现在就应该避开。
+
+<img
+  src="/static/images/GameCC/esp32-c3-super-mini-back.jpg"
+  alt="ESP32-C3 Super Mini 板子背面，开始做 GPIO 资源规划前先确认硬件边界"
+  width="700"
+/>
+
+真正的硬件开发从来不是“先写功能”，而是先知道自己手里到底有哪些资源。
+
+## 为什么要先画资源图
+
+这一步看起来像做笔记，实际上是在做安全边界。
+
+因为在这块板子上，GPIO 不是平均分配的。它们天然分成几类:
+
+| 类别     | 示例                          | 含义                          |
+| -------- | ----------------------------- | ----------------------------- |
+| 已占用   | `GPIO0 / 1 / 2 / 3 / 4 / 6`   | 已经接了屏幕和按钮            |
+| 已损坏   | `GPIO5 / 10`                  | 当前板子上不可用              |
+| 需避开   | `GPIO8 / 9 / 12-17 / 18 / 19` | 可能影响启动、Flash、USB-JTAG |
+| 候选输入 | `GPIO7 / 20 / 21`             | 后续更适合给新按钮            |
+
+这张表的意义不只是“记录现状”，更重要的是把可用输入口从一堆引脚里筛出来。
+如果没有这个过程，后面接线就容易变成一种“哪里空就插哪里”的试错模式。
+
+<img
+  src="/static/images/GameCC/button-wiring-harness.jpg"
+  alt="按钮与连线的实际接法，先把物理输入和 GPIO 资源对应起来"
+  width="700"
+/>
+
+这类硬件照最重要的价值，不是拍得漂亮，而是把“我在接什么”说清楚。
+
+## 输入入口不是越多越好
+
+Day3 我最想强调的一点，是把输入从“电平”升级成“事件”。
+
+一个按钮一旦接进系统，它就不再只是一个 HIGH/LOW 的读数，而是一个可以改变页面、改变状态、甚至改变设备行为的入口。
+
+这意味着输入必须被分级管理:
+
+- 普通输入只是数据
+- 确认键和返回键是导航入口
+- 启动脚、Flash 相关脚、调试脚，是更底层的系统入口
+
+如果把这些入口混在一起，系统就会越来越难维护。更糟的是，有些脚一旦被错误使用，代价不是“按钮失灵”，而是“设备不好恢复、不好烧录、不好排错”。
+
+## 今天的代码思路: 把动作收口
+
+这次我把 `Enter` 和 `Back` 从“输入来源”里拆出来，变成两个统一行为函数。
+
+```cpp
+void handleConfirm() {
+  if (currentState == STATE_MENU) {
+    enterSelectedPage();
+  }
+}
+
+void handleBack() {
+  if (currentState == STATE_GAME ||
+      currentState == STATE_GALLERY ||
+      currentState == STATE_ABOUT) {
+    currentState = STATE_MENU;
+  }
+}
+```
+
+这类写法的好处是，后面不管是串口输入还是实体按钮，最后都走同一套逻辑。
+输入源可以不同，但行为必须一致。这样做的直接收益是调试简单，长期收益是系统边界清楚。
+
+## 串口先保留，但不再让它当主角
+
+Day3 里我没有急着把串口入口删掉，而是给它降级成调试通道。
+
+这一步其实很关键。
+
+因为在硬件还在变化的时候，串口是最方便的排错口。你可以通过它确认:
+
+- 菜单逻辑有没有跑通
+- 页面跳转有没有错
+- 按键硬件是不是接错了
+
+但从产品角度看，串口又不应该长期占据主输入的位置。于是我加了一个开关，把它明确区分成开发期和发布期两种模式。
+
+```cpp
+const bool ENABLE_SERIAL_DEBUG_INPUT = true;
+
+void handleSerialInput(char cmd) {
+  if (!ENABLE_SERIAL_DEBUG_INPUT) {
+    return;
+  }
+  if (cmd == 'e') handleConfirm();
+  else if (cmd == 'b') handleBack();
+}
+```
+
+这其实就是最早的“最小暴露面”意识: 能收口的输入，就别让它一直开着。
+
+## 状态跳转开始受规则约束
+
+Day3 还有一个很重要的变化，是把状态跳转从“哪里都能改”收紧成“只能按规则走”。
+
+我给状态迁移加了一层统一入口，允许的路径只有这些:
+
+- `SPLASH -> MENU`
+- `MENU -> GAME / GALLERY / ABOUT`
+- `GAME / GALLERY / ABOUT -> MENU`
+
+像 `SPLASH -> GAME`、`GAME -> ABOUT` 这种跳转，暂时都不放行。
+
+```cpp
+bool requestStateChange(AppState nextState) {
+  if (currentState == nextState) {
+    return false;
+  }
+
+  bool allowed = false;
+  if (currentState == STATE_SPLASH && nextState == STATE_MENU) allowed = true;
+  if (currentState == STATE_MENU &&
+      (nextState == STATE_GAME ||
+       nextState == STATE_GALLERY ||
+       nextState == STATE_ABOUT)) allowed = true;
+  if ((currentState == STATE_GAME ||
+       currentState == STATE_GALLERY ||
+       currentState == STATE_ABOUT) &&
+      nextState == STATE_MENU) allowed = true;
+
+  if (allowed) {
+    currentState = nextState;
+  }
+  return allowed;
+}
+```
+
+这一步看上去只是多写了几行判断，但本质上已经不是“页面切换”，而是在给系统补规则。
+
+## 今天最重要的收获
+
+Day3 让我第一次比较明确地意识到，嵌入式项目里的“减小攻击面”，不是一句很虚的安全口号，而是很具体的工程动作:
+
+- 先区分哪些脚能用、哪些脚不能碰
+- 再把输入入口分成不同层级
+- 接着把行为逻辑集中到少数几个入口
+- 最后给状态跳转加规则
+
+也就是说，安全不是后面补上的，而是从资源图开始就已经在做了。
+
+<img
+  src="/static/images/GameCC/gpio-button-menu-result.jpg"
+  alt="RetroPop Mini 当前菜单已经可以通过输入稳定切换，说明输入链路和状态机开始成型"
+  width="700"
+/>
+
+看到这块屏幕的时候，我更在意的不是“它亮了”，而是它已经有了清晰的输入边界、页面边界和恢复边界。
+
+这就是 Day3 的价值。
+
+如果这篇博客对你有帮助，请点击下方按钮，来到我的github主页点个赞吧
+
+<img src="/static/images/like.png" alt="like" width="700" />
