@@ -1,0 +1,27 @@
+Use $blog-publisher.
+
+Task:
+Convert the local Word note(s) below into publishable Chinese MDX blog post(s) for this repo.
+
+Inputs:
+- Word note(s): <DOCX_PATH>
+- Image folder: <IMAGE_DIR>
+- Output folder: <OUTPUT_DIR>
+
+Rules:
+- Match the repository’s existing technical-blog style.
+- Reorganize the note for readability, but do not invent facts or experiment results.
+- Select only the images that support the story, rename them to semantic kebab-case, and update the MDX paths.
+- Keep the source `.docx` untouched.
+- Validate the finished MDX before delivery.
+- If I explicitly ask for git delivery, commit and push only the files created for this task.
+
+Common topic presets:
+- ADAS ECU / embedded security: emphasize hardware analysis, diagnostics, attack surface, and system boundaries.
+- GameCC / ESP32-C3: emphasize GPIO, state machines, input control, debounce, and rendering refactors.
+- Generic technical note: emphasize the problem, the implementation, the verification, and why it matters.
+
+Output:
+- a complete `.mdx` file ready for publication
+- any renamed images under the same topic folder
+- a short validation summary

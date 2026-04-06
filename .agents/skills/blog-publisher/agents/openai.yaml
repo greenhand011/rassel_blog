@@ -1,0 +1,4 @@
+interface:
+  display_name: "Blog Publisher"
+  short_description: "Turn Word notes and images into publishable Chinese MDX blog posts"
+  default_prompt: "Use $blog-publisher to convert the selected Word note and images into a publishable MDX blog post for this repository."
