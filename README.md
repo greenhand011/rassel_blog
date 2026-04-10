@@ -342,3 +342,9 @@ Using the template? Support this effort by giving a star on GitHub, sharing your
 ## Licence
 
 [MIT](https://github.com/timlrx/tailwind-nextjs-starter-blog/blob/main/LICENSE) © [Timothy Lin](https://www.timlrx.com)
+
+## skill method
+
+Use $blog-publisher to turn <DOCX_PATH> plus <IMAGE_DIR> into a publishable MDX post in <OUTPUT_DIR>. Validate it, then commit and push only the files created for this task.
+
+Use $blog-publisher to turn E:\blog\rassel_blog\data\blog\Day 5 创建了首个对外诊断接口.docx plus E:\blog\rassel_blog\public\static\images\ADAS into a publishable MDX post in E:\blog\rassel_blog\data\blog. Validate it. then commit and push only the files created for this task.
