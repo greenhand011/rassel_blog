@@ -3,52 +3,80 @@ title: '编译、汇编、链接到底做了什么'
 date: '2026-04-11'
 tags: ['Embedded']
 draft: false
-summary: '本文详细拆解了从C语言源代码到最终可执行文件的完整构建流程'
+summary: '本文详细拆解了从 C 语言源代码到最终可执行文件的完整构建流程。'
 ---
 
-# 环境准备
+很多人刚接触 `gcc` 的时候，只会把它当成一个“敲完命令就出可执行文件”的黑盒。但如果后面要做交叉编译、ELF 分析，或者继续往逆向和嵌入式方向走，迟早都得把这个黑盒拆开。
 
-**Ubuntu 20.04**
-原因很直接：
+这篇文章就按一条最小但完整的链路来走一遍：从 `main.c` 出发，看清楚预处理、汇编、目标文件和最终链接到底各自干了什么。
+
+## 环境准备
+
+我这里用的是 **Ubuntu 20.04**。原因很直接：
 
 1. 教程最多
 2. 命令最通用
 3. 嵌入式、车载、交叉编译、ELF 分析，Ubuntu 最省事
 4. Kali 更偏安全测试，不适合拿来当底层入门主环境
-5. CentOS/RHEL 更偏服务器和企业环境，后面我会补差异
+5. CentOS / RHEL 更偏服务器和企业环境，后面我会补差异
 
-看一下你的系统是什么
+先看一下系统版本：
 
 ```bash
 cat /etc/os-release
 ```
 
 <img src="/static/images/Linux_study/OS_version.png" alt="查看操作系统版本" width="700" />
-再确定你有没有**gcc**，没有编译工具链后面也无从谈起 ```bash gcc --version ```
-<img src="/static/images/Linux_study/gcc_version.png" alt="查看有没有gcc" width="700" />
-如图所示就是已经按照了，当然如果你没安装，可以用以下命令安装 ### Ubuntu / Kali ```bash sudo apt
-update sudo apt install -y build-essential ``` ### CentOS / Rocky / AlmaLinux ```bash sudo dnf
-groupinstall -y "Development Tools" ``` 如果你的系统比较老，也可能是 ```bash sudo yum groupinstall
--y "Development Tools" ``` 环境准备好了，接下来我们按编译，汇编，链接的顺序开始接下来的学习
 
-# 写一个main.c并编译成可执行文件
+再确认你有没有 `gcc`。没有编译工具链，后面的步骤都跑不起来。
 
-先创建一个文件夹（整齐的文件夹对于我们之后找文件也好做其他工作也好都提供了便利）
+```bash
+gcc --version
+```
+
+<img src="/static/images/Linux_study/gcc_version.png" alt="查看有没有 gcc" width="700" />
+
+如果已经有输出，就说明编译环境已经在了。如果没有，可以按发行版补上：
+
+### Ubuntu / Kali
+
+```bash
+sudo apt update
+sudo apt install -y build-essential
+```
+
+### CentOS / Rocky / AlmaLinux
+
+```bash
+sudo dnf groupinstall -y "Development Tools"
+```
+
+如果系统比较老，也可能要用：
+
+```bash
+sudo yum groupinstall -y "Development Tools"
+```
+
+环境准备好了，接下来就按编译、汇编、链接的顺序往下走。
+
+## 写一个 `main.c`，先把最小程序跑起来
+
+先创建一个单独的工作目录，后面看中间产物会更清楚：
 
 ```bash
 mkdir -p ~/day1_build
 cd ~/day1_build
 ```
 
-> -p这个参数的意思是如果父目录不存在就一并创建
+`-p` 的意思是如果父目录不存在，就一并创建。
 
-## 创建main.c
+### 创建 `main.c`
 
 ```bash
 nano main.c
 ```
 
-代码内容如下
+代码内容如下：
 
 ```c
 #include <stdio.h>
@@ -59,191 +87,232 @@ int main(void) {
 }
 ```
 
-保存退出
-按 Ctrl + O
-回车
-按 Ctrl + X
-**看一下文件是不是创建成功了**
+保存退出后，可以先确认文件在不在：
 
 ```bash
 ls
 ```
 
-<img
-  src="/static/images/Linux_study/exit_main.png"
-  alt="ls发现存在main.c"
-  width="700"
-/>
-用cat就可以看程序里的代码
+<img src="/static/images/Linux_study/exit_main.png" alt="ls 发现 main.c 已经创建成功" width="700" />
+
+再用 `cat` 看一下内容：
+
 ```bash
 cat main.c
 ```
-<img
-  src="/static/images/Linux_study/cat_content.png"
-  alt="cat main.c内容"
-  width="700"
-/>
-## 开始编译
+
+<img src="/static/images/Linux_study/cat_content.png" alt="cat main.c 查看文件内容" width="700" />
+
+### 开始编译
+
 ```bash
 gcc main.c -o app
 ```
->gcc main.c：让 gcc 编译这个 C 文件
--o app：把输出文件命名为 app
 
-查看一下编译的结果
+- `gcc main.c`：让 `gcc` 编译这个 C 文件
+- `-o app`：把输出文件命名为 `app`
+
+编译完以后看一下目录：
 
 ```bash
 ls -l
 ```
 
-<img src="/static/images/Linux_study/Compilation.png" alt="编译完成" width="700" />
-上图也可见app是可执行权限 ### 运行它
-<img src="/static/images/Linux_study/runapp.png" alt="运行结果" width="700" />
-做到这步你起码应该知道**main.c 是源代码，app 是 gcc 生成的可执行文件。** **一个 .c 文件经过 gcc
-处理后，可以变成一个能运行的程序。**
+<img src="/static/images/Linux_study/Compilation.png" alt="编译完成后生成 app" width="700" />
 
-# 预处理
+从图里也能看出来，`app` 已经带了可执行权限。接着直接运行：
 
-> 要再把 gcc 当成“黑盒”,它的第一层就是**预处理**
+```bash
+./app
+```
 
-main.c 里有这一句
+<img src="/static/images/Linux_study/runapp.png" alt="运行 app 的结果" width="700" />
+
+做到这一步，至少要先建立一个最基本的认识：
+
+- `main.c` 是源代码
+- `app` 是 `gcc` 生成的可执行文件
+
+也就是说，一个 `.c` 文件经过 `gcc` 处理以后，可以变成一个真正能运行的程序。
+
+## 预处理：编译器真正看到的，已经不是原文件了
+
+很多人把 `gcc` 当黑盒，就是因为没意识到它第一层先做的是 **预处理**。
+
+`main.c` 里有这一句：
 
 ```c
 #include <stdio.h>
 ```
 
-这说明编译器真正处理的内容，不只是你眼前这 4 行代码。
-它会先把头文件、宏这些东西处理掉，然后才进入后面的编译阶段。
+这说明编译器真正处理的内容，并不只是你眼前这几行代码。它会先把头文件、宏这些东西展开，然后才进入后面的编译阶段。
 
-## 只做预处理
+### 只做预处理
 
 ```bash
 gcc -E main.c -o main.i
 ```
 
-> - gcc：调用编译工具
-> - -E：只做预处理
-> - main.c：输入源文件
-> - -o main.i：输出到 main.i
+- `gcc`：调用编译工具
+- `-E`：只做预处理
+- `main.c`：输入源文件
+- `-o main.i`：输出到 `main.i`
 
-这条命令不会生成可执行文件，它只会把 预处理后的结果 保存下来。
-不要直接 cat main.i因为这个文件会很长，直接全打印会很乱，只看前面20行。
+这条命令不会生成可执行文件，只会把预处理后的结果保存下来。
+
+不要直接 `cat main.i`，因为这个文件会很长。先只看前 20 行：
 
 ```bash
 head -n 20 main.i
 ```
 
-<img
-  src="/static/images/Linux_study/head_result.png"
-  alt="预处理"
-  width="700"
-/>
-出现了一堆系统头文件路径，说明预处理器已经把 #include <stdio.h> 真正展开进来了。
+<img src="/static/images/Linux_study/head_result.png" alt="预处理后的 main.i 前几行" width="700" />
 
-再搜一下那句 printf
+这里出现了一堆系统头文件路径，说明预处理器已经把 `#include <stdio.h>` 真正展开进来了。
+
+再搜一下 `printf`：
 
 ```bash
 grep "printf" main.i | head
 ```
 
-<img
-  src="/static/images/Linux_study/head_printf.png"
-  alt="预处理中的printf"
-  width="700"
-/>
-看到了一堆 ```extern int printf(...)```这表示```printf```这个函数的“声明”被带进来了。
-意思就是告诉编译器后面如果有人调用```printf```，这是一个存在的函数，它长这样。
-当然这只是声明进来了可不是```printf```的真正执行代码放进来了
-# 汇编
-已经确认了：main.c 是你写的源码,main.i 是预处理后的源码
->编译器怎么把这些 C 代码变成更接近机器执行形式的东西？
+<img src="/static/images/Linux_study/head_printf.png" alt="在预处理结果里搜索 printf" width="700" />
 
-答案就是**先变成汇编 .s**
+你会看到类似 `extern int printf(...)` 这样的内容。这表示 `printf` 这个函数的声明已经被带进来了。
+
+意思就是，编译器现在已经知道：后面如果有人调用 `printf`，这是一个存在的函数，它长这样。
+
+但这里带进来的只是声明，不是 `printf` 的真正实现代码。
+
+## 汇编：C 代码开始变成更接近机器的形式
+
+现在已经确认了：
+
+- `main.c` 是你写的源码
+- `main.i` 是预处理后的源码
+
+接下来编译器要做的，就是把它继续往机器更容易处理的方向推进。第一步就是生成汇编文件 `.s`。
 
 ```bash
 gcc -S main.i -o main.s
 ```
 
-> -S：表示编译到汇编为止
+`-S` 的意思是编译到汇编为止。
 
-依旧先看一下前面30行
+先看前 30 行：
 
 ```bash
 head -n 30 main.s
 ```
 
-<img
-  src="/static/images/Linux_study/mains.png"
-  alt="汇编后的代码"
-  width="700"
-/>
-先看```.string "Hello,Build Flow!"```
-这说明写在 C 里的字符串，已经被编译器放进汇编对应的数据区域了
-```main:```
-这说明 main 函数已经被翻译成汇编层面的函数入口标签了。
-也就是说：
-**C 里的函数，到了汇编里会变成一个标签 + 一串指令。**
-```.globl main```
-这表示 main 是一个全局可见的符号,这和后面链接器识别函数符号有关。
-```call	puts@PLT```
-可能有人看到这会奇怪，我们写明明是
+<img src="/static/images/Linux_study/mains.png" alt="main.s 汇编内容" width="700" />
+
+这里有几处特别值得看：
+
+- `.string "Hello, Build Flow!"`  
+  这说明写在 C 里的字符串，已经被编译器放进汇编对应的数据区域了。
+
+- `main:`  
+  这说明 `main` 函数已经被翻译成汇编层面的函数入口标签了。
+
+- `.globl main`  
+  这表示 `main` 是一个全局可见的符号，后面链接器会靠这些符号来识别和拼接函数。
+
+- `call puts@PLT`  
+  这一行最容易让人意外。因为我们在源码里写的是：
+
 ```c
-printf("Hello,Build Flow!\n");
+printf("Hello, Build Flow!\n");
 ```
-为什么调用是
+
+但汇编里调用的却是：
+
 ```asm
-call	puts@PLT
+call puts@PLT
 ```
-这是因为编译阶段不只是“**翻译**”，还会“**优化**”。
-这句代码本质上只是“打印一个固定字符串并换行”，这种情况下，编译器觉得直接调用 puts 更简单
->函数原型：int puts(const char *str);
-功能：将参数 str 指向的字符串输出到标准输出（通常是终端屏幕），并自动在末尾添加换行符。
 
-# 目标文件（object file）
+这说明编译阶段不只是“翻译”，还会做优化。
 
-现在已经有了汇编文件 **main.s**，下一步就是把汇编进一步变成真正的机器码半成品**main.o**
+因为这句代码的本质只是“打印一个固定字符串并换行”，所以编译器会觉得直接调用 `puts` 更简单。
+
+`puts` 的函数原型是：
+
+```c
+int puts(const char *str);
+```
+
+它的作用就是把字符串输出到标准输出，并自动在末尾补一个换行。
+
+## 目标文件：真正的机器码半成品出现了
+
+现在已经有了汇编文件 `main.s`，下一步就是把汇编进一步变成真正的机器码半成品，也就是 `main.o`。
 
 ```bash
 gcc -c main.s -o main.o
 ```
 
-看它到底是什么类型
+先看一下它到底是什么类型：
 
-```file
+```bash
 file main.o
 ```
 
-<img src="/static/images/Linux_study/file_obf.png" alt=".o文件是什么文件类型" width="700" />
-注意这个单词**relocatable**
-意思是**它还可以被继续“搬动/重定位”后再参与链接**，这也正是为什么它还不是最终可执行文件**executable**
-。
-<img src="/static/images/Linux_study/file_exc.png" alt="app文件是什么文件类型" width="700" />
+<img src="/static/images/Linux_study/file_obf.png" alt="main.o 的文件类型" width="700" />
 
-看图也能看出app文件也不是**executable**
-这是因为在 **Ubuntu 20.04** 上，gcc 默认常常会生成 **PIE 可执行文件**
+这里最关键的词是 **relocatable**。
 
-> 这是一种“位置无关的可执行文件”格式。
-> 这种文件在 ELF 类型上，常常会显示得有点像“shared object”
+它的意思是：这个文件还可以被继续“搬动 / 重定位”，然后再交给链接器处理。所以它还不是最终可执行文件，而只是一个中间产物。
 
-`file` 这个命令给的是“人类友好描述”但我们现在要看更底层一点的东西**ELF 头里的 Type 字段**,这个字段最能说明身份。
+再看一下 `app`：
+
+```bash
+file app
+```
+
+<img src="/static/images/Linux_study/file_exc.png" alt="app 的文件类型" width="700" />
+
+这里看起来也不完全像传统意义上的 `executable`，这是因为在 **Ubuntu 20.04** 上，`gcc` 默认经常会生成 **PIE 可执行文件**。
+
+PIE 的全称是 Position Independent Executable，也就是“位置无关可执行文件”。这种格式在 ELF 类型上，常常会显示得有点像 `shared object`。
+
+## 再看深一层：ELF 头里的 Type 字段
+
+`file` 给的是更偏“人类友好”的描述。如果想确认它们在 ELF 头里的真实身份，更直接的办法是看 `Type` 字段。
 
 ```bash
 readelf -h main.o | grep Type
-```
-
-```bash
 readelf -h app | grep Type
 ```
 
-> - -h ：--file-header 的简写,只显示 ELF 文件头。文件头是 ELF 文件的开头部分，包含了文件的“身份证”信息，比如文件类型、机器架构、入口地址等
-> - 上述Type的大小写别弄错，如果你的系统是中文版记得把Type换成类型
+- `-h` 是 `--file-header` 的简写，只显示 ELF 文件头
+- 文件头可以理解成 ELF 的“身份证”，里面会记录文件类型、架构、入口地址等信息
+- 如果你的系统是中文版，`grep Type` 可能要换成 `grep 类型`
 
 <img
   src="/static/images/Linux_study/readelfapp_maino.png"
-  alt="app文件是什么文件类型"
+  alt="通过 readelf 查看 main.o 和 app 的 Type 字段"
   width="700"
 />
-main.o 是**REL**这说明它是**可重定位目标文件**，还是半成品给链接器继续处理用，不是最终交付程序
-app是**DYN**“共享目标文件”在 Ubuntu 20.04 里，gcc 默认会生成 PIE 可执行文件，所以它的 ELF
-类型常显示成**DYN** 这就是一整套gcc流程了，希望这篇博客可以帮到你
-<img src="/static/images/Linux_study/flowchart1.png.png" alt="gcc流程图" width="700" />
+
+这里可以看出：
+
+- `main.o` 的类型是 **REL**  
+  说明它是可重定位目标文件，还是半成品，要继续交给链接器处理。
+
+- `app` 的类型是 **DYN**  
+  这并不表示它只是一个共享库，而是因为 Ubuntu 20.04 上 `gcc` 默认生成 PIE，可执行文件在 ELF 头里经常会显示成 `DYN`。
+
+## 把整条链串起来
+
+如果把今天这一整套流程压缩成一张图，其实就是下面这条路径：
+
+<img src="/static/images/Linux_study/flowchart1.png" alt="gcc 构建流程图" width="700" />
+
+从源码到最后的可执行文件，中间至少经历了这些阶段：
+
+1. 预处理：展开头文件和宏
+2. 编译到汇编：把 C 代码翻译成汇编表示
+3. 汇编到目标文件：把汇编变成机器码半成品
+4. 链接：把目标文件和所需库拼成最终可执行文件
+
+真正把这条链看明白之后，后面再去理解交叉编译、静态链接、动态链接、ELF 分析，都会轻松很多。
