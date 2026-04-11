@@ -1,0 +1,249 @@
+---
+title: '编译、汇编、链接到底做了什么'
+date: '2026-04-11'
+tags: ['Embedded']
+draft: false
+summary: '本文详细拆解了从C语言源代码到最终可执行文件的完整构建流程'
+---
+
+# 环境准备
+
+**Ubuntu 20.04**
+原因很直接：
+
+1. 教程最多
+2. 命令最通用
+3. 嵌入式、车载、交叉编译、ELF 分析，Ubuntu 最省事
+4. Kali 更偏安全测试，不适合拿来当底层入门主环境
+5. CentOS/RHEL 更偏服务器和企业环境，后面我会补差异
+
+看一下你的系统是什么
+
+```bash
+cat /etc/os-release
+```
+
+<img src="/static/images/Linux_study/OS_version.png" alt="查看操作系统版本" width="700" />
+再确定你有没有**gcc**，没有编译工具链后面也无从谈起 ```bash gcc --version ```
+<img src="/static/images/Linux_study/gcc_version.png" alt="查看有没有gcc" width="700" />
+如图所示就是已经按照了，当然如果你没安装，可以用以下命令安装 ### Ubuntu / Kali ```bash sudo apt
+update sudo apt install -y build-essential ``` ### CentOS / Rocky / AlmaLinux ```bash sudo dnf
+groupinstall -y "Development Tools" ``` 如果你的系统比较老，也可能是 ```bash sudo yum groupinstall
+-y "Development Tools" ``` 环境准备好了，接下来我们按编译，汇编，链接的顺序开始接下来的学习
+
+# 写一个main.c并编译成可执行文件
+
+先创建一个文件夹（整齐的文件夹对于我们之后找文件也好做其他工作也好都提供了便利）
+
+```bash
+mkdir -p ~/day1_build
+cd ~/day1_build
+```
+
+> -p这个参数的意思是如果父目录不存在就一并创建
+
+## 创建main.c
+
+```bash
+nano main.c
+```
+
+代码内容如下
+
+```c
+#include <stdio.h>
+
+int main(void) {
+    printf("Hello, Build Flow!\n");
+    return 0;
+}
+```
+
+保存退出
+按 Ctrl + O
+回车
+按 Ctrl + X
+**看一下文件是不是创建成功了**
+
+```bash
+ls
+```
+
+<img
+  src="/static/images/Linux_study/exit_main.png"
+  alt="ls发现存在main.c"
+  width="700"
+/>
+用cat就可以看程序里的代码
+```bash
+cat main.c
+```
+<img
+  src="/static/images/Linux_study/cat_content.png"
+  alt="cat main.c内容"
+  width="700"
+/>
+## 开始编译
+```bash
+gcc main.c -o app
+```
+>gcc main.c：让 gcc 编译这个 C 文件
+-o app：把输出文件命名为 app
+
+查看一下编译的结果
+
+```bash
+ls -l
+```
+
+<img src="/static/images/Linux_study/Compilation.png" alt="编译完成" width="700" />
+上图也可见app是可执行权限 ### 运行它
+<img src="/static/images/Linux_study/runapp.png" alt="运行结果" width="700" />
+做到这步你起码应该知道**main.c 是源代码，app 是 gcc 生成的可执行文件。** **一个 .c 文件经过 gcc
+处理后，可以变成一个能运行的程序。**
+
+# 预处理
+
+> 要再把 gcc 当成“黑盒”,它的第一层就是**预处理**
+
+main.c 里有这一句
+
+```c
+#include <stdio.h>
+```
+
+这说明编译器真正处理的内容，不只是你眼前这 4 行代码。
+它会先把头文件、宏这些东西处理掉，然后才进入后面的编译阶段。
+
+## 只做预处理
+
+```bash
+gcc -E main.c -o main.i
+```
+
+> - gcc：调用编译工具
+> - -E：只做预处理
+> - main.c：输入源文件
+> - -o main.i：输出到 main.i
+
+这条命令不会生成可执行文件，它只会把 预处理后的结果 保存下来。
+不要直接 cat main.i因为这个文件会很长，直接全打印会很乱，只看前面20行。
+
+```bash
+head -n 20 main.i
+```
+
+<img
+  src="/static/images/Linux_study/head_result.png"
+  alt="预处理"
+  width="700"
+/>
+出现了一堆系统头文件路径，说明预处理器已经把 #include <stdio.h> 真正展开进来了。
+
+再搜一下那句 printf
+
+```bash
+grep "printf" main.i | head
+```
+
+<img
+  src="/static/images/Linux_study/head_printf.png"
+  alt="预处理中的printf"
+  width="700"
+/>
+看到了一堆 ```extern int printf(...)```这表示```printf```这个函数的“声明”被带进来了。
+意思就是告诉编译器后面如果有人调用```printf```，这是一个存在的函数，它长这样。
+当然这只是声明进来了可不是```printf```的真正执行代码放进来了
+# 汇编
+已经确认了：main.c 是你写的源码,main.i 是预处理后的源码
+>编译器怎么把这些 C 代码变成更接近机器执行形式的东西？
+
+答案就是**先变成汇编 .s**
+
+```bash
+gcc -S main.i -o main.s
+```
+
+> -S：表示编译到汇编为止
+
+依旧先看一下前面30行
+
+```bash
+head -n 30 main.s
+```
+
+<img
+  src="/static/images/Linux_study/mains.png"
+  alt="汇编后的代码"
+  width="700"
+/>
+先看```.string "Hello,Build Flow!"```
+这说明写在 C 里的字符串，已经被编译器放进汇编对应的数据区域了
+```main:```
+这说明 main 函数已经被翻译成汇编层面的函数入口标签了。
+也就是说：
+**C 里的函数，到了汇编里会变成一个标签 + 一串指令。**
+```.globl main```
+这表示 main 是一个全局可见的符号,这和后面链接器识别函数符号有关。
+```call	puts@PLT```
+可能有人看到这会奇怪，我们写明明是
+```c
+printf("Hello,Build Flow!\n");
+```
+为什么调用是
+```asm
+call	puts@PLT
+```
+这是因为编译阶段不只是“**翻译**”，还会“**优化**”。
+这句代码本质上只是“打印一个固定字符串并换行”，这种情况下，编译器觉得直接调用 puts 更简单
+>函数原型：int puts(const char *str);
+功能：将参数 str 指向的字符串输出到标准输出（通常是终端屏幕），并自动在末尾添加换行符。
+
+# 目标文件（object file）
+
+现在已经有了汇编文件 **main.s**，下一步就是把汇编进一步变成真正的机器码半成品**main.o**
+
+```bash
+gcc -c main.s -o main.o
+```
+
+看它到底是什么类型
+
+```file
+file main.o
+```
+
+<img src="/static/images/Linux_study/file_obf.png" alt=".o文件是什么文件类型" width="700" />
+注意这个单词**relocatable**
+意思是**它还可以被继续“搬动/重定位”后再参与链接**，这也正是为什么它还不是最终可执行文件**executable**
+。
+<img src="/static/images/Linux_study/file_exc.png" alt="app文件是什么文件类型" width="700" />
+
+看图也能看出app文件也不是**executable**
+这是因为在 **Ubuntu 20.04** 上，gcc 默认常常会生成 **PIE 可执行文件**
+
+> 这是一种“位置无关的可执行文件”格式。
+> 这种文件在 ELF 类型上，常常会显示得有点像“shared object”
+
+`file` 这个命令给的是“人类友好描述”但我们现在要看更底层一点的东西**ELF 头里的 Type 字段**,这个字段最能说明身份。
+
+```bash
+readelf -h main.o | grep Type
+```
+
+```bash
+readelf -h app | grep Type
+```
+
+> - -h ：--file-header 的简写,只显示 ELF 文件头。文件头是 ELF 文件的开头部分，包含了文件的“身份证”信息，比如文件类型、机器架构、入口地址等
+> - 上述Type的大小写别弄错，如果你的系统是中文版记得把Type换成类型
+
+<img
+  src="/static/images/Linux_study/readelfapp_maino.png"
+  alt="app文件是什么文件类型"
+  width="700"
+/>
+main.o 是**REL**这说明它是**可重定位目标文件**，还是半成品给链接器继续处理用，不是最终交付程序
+app是**DYN**“共享目标文件”在 Ubuntu 20.04 里，gcc 默认会生成 PIE 可执行文件，所以它的 ELF
+类型常显示成**DYN** 这就是一整套gcc流程了，希望这篇博客可以帮到你
+<img src="/static/images/Linux_study/flowchart1.png.png" alt="gcc流程图" width="700" />
