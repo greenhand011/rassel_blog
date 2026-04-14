@@ -1,0 +1,270 @@
+---
+title: 'C/C++ 程序内存布局：栈、堆、全局区与静态区深度理解'
+date: '2026-04-13'
+tags: ['Embedded']
+draft: false
+summary: '今天的学习围绕 C/C++ 程序在运行时的内存布局展开，核心目标是理解栈、堆、全局区和静态区的概念、用途以及生命周期差异。'
+---
+
+很多初学者一提到“内存布局”，脑子里会立刻冒出栈、堆、全局区、静态区这些词，但真要往下问一句“它们到底是按什么分开的”，就容易开始糊。
+
+我这次学习想先把问题收窄，不从操作系统大图景讲起，而是只盯住一个最实用的判断标准：**变量活多久，决定它大概率在哪块内存。**
+
+## 先按生命周期分内存
+
+### 变量的三种常见类型
+
+程序里的变量，大体可以分成三类。
+
+#### 1. 函数执行时临时存在
+
+```c
+void func() {
+    int a = 10;
+}
+```
+
+`a` 只在 `func` 执行期间存在，所以它是临时变量。像这种临时变量，通常放在 **栈** 上。
+
+#### 2. 程序运行期间一直存在
+
+```c
+int g = 100;
+```
+
+```c
+void func() {
+    static int count = 0;
+}
+```
+
+这类变量的生命周期贯穿整个程序运行期，所以它们属于长期存活的数据。典型代表就是 **全局变量** 和 **静态变量**。
+
+#### 3. 运行时额外申请出来
+
+```c
+int *p = malloc(sizeof(int));
+```
+
+这类空间不是函数天然自带的，而是程序运行过程中临时去“额外要了一块地方”，它属于 **堆**。
+
+这里有个很容易绕住人的点：
+
+```c
+int *p = malloc(sizeof(int));
+```
+
+这句代码里其实同时出现了两个对象：
+
+- `p` 是局部变量，所以它本身属于临时变量类
+- `malloc(...)` 申请出来的那块空间，属于动态申请类
+
+也就是说：
+
+> `p` 是栈上的变量，`malloc(...)` 返回的是堆上的内存。指针变量自己在哪，和它指向的内存在哪，并不一定一样。
+
+## 分类和内存区域的对应关系
+
+### 临时变量类 → 栈
+
+- 普通局部变量
+- 函数参数
+- 一部分函数调用现场信息
+
+### 动态申请类 → 堆
+
+- `malloc`
+- `calloc`
+- `realloc`
+- `new`
+  申请出来的那块空间
+
+### 长期存活类 → 全局区 / 静态区
+
+- 全局变量
+- `static` 变量
+
+## 在 Ubuntu 里打印不同变量的地址
+
+为了把这几类变量真正落到实验里，我还是按之前的习惯，先建一个单独目录：
+
+```bash
+mkdir -p ~/d2_memory
+cd ~/d2_memory
+```
+
+然后创建一个打印三类变量地址的程序：
+
+```bash
+nano mem_layout.c
+```
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+
+int g_var = 10;         // 全局变量
+static int s_var = 20;  // 静态全局变量
+
+void func(void) {
+    int local_var = 30;                   // 局部变量（栈）
+    static int local_static = 40;         // 静态局部变量
+    int *heap_var = malloc(sizeof(int));  // 堆内存
+    if (heap_var == NULL) {
+        printf("malloc failed\n");
+        return;
+    }
+
+    *heap_var = 50;
+
+    printf("g_var          address: %p\n", (void *)&g_var);
+    printf("s_var          address: %p\n", (void *)&s_var);
+    printf("local_static   address: %p\n", (void *)&local_static);
+    printf("local_var      address: %p\n", (void *)&local_var);
+    printf("heap_var(ptr)  address: %p\n", (void *)&heap_var);
+    printf("heap memory    address: %p\n", (void *)heap_var);
+
+    free(heap_var);
+}
+
+int main(void) {
+    func();
+    return 0;
+}
+```
+
+编译：
+
+```bash
+gcc -Wall -Wextra -o mem_layout mem_layout.c
+```
+
+`-Wall -Wextra` 的作用是打开常见警告。
+
+运行：
+
+```bash
+./mem_layout
+```
+
+<img
+  src="/static/images/Linux_study/memaddress.png"
+  alt="打印全局变量、静态变量、局部变量和堆内存地址"
+  width="700"
+/>
+
+从输出里可以直接看到几个很直观的现象：
+
+- `g_var`、`s_var`、`local_static` 的地址比较接近
+- `local_var` 和 `heap_var(ptr)` 也比较接近
+- `heap memory` 明显又落在另一片区域
+
+这已经足够说明：程序里的不同类型变量，确实会被放到不同的内存区域里。
+
+## 用一张图把整体结构先记住
+
+<img src="/static/images/Linux_study/pic_mem.png" alt="程序内存布局示意图" width="700" />
+
+看到这里，栈、堆、全局区、静态区的第一层印象应该已经能立住了。但如果继续往下走，就会发现“全局区 / 静态区”这个说法还不够细。
+
+## 把全局区和静态区继续细分成 `.data` 与 `.bss`
+
+前面说的全局变量和静态变量，本质上都属于长期存活类数据。但再往下还能继续分：
+
+- **已初始化的长期变量** 通常进入 **`.data`**
+- **未初始化，或者初始化为 0 的长期变量** 通常进入 **`.bss`**
+
+### 为什么还要分 `.data` 和 `.bss`
+
+原因其实很务实。
+
+`.data` 里的变量有明确初始值，所以这些值必须真的放进可执行文件里。
+
+`.bss` 里的变量如果没有手动初始化，或者本来就是 0，那就没必要在可执行文件里把一大块 0 实打实写进去。系统在加载程序时，直接把这一块区域清零就够了。
+
+> `.bss` 的存在，本质上是为了节省可执行文件空间。
+
+## 再写一个程序，看 `.data` 和 `.bss`
+
+```bash
+nano sections_demo.c
+```
+
+```c
+#include <stdio.h>
+
+int g1 = 5;
+int g2;
+int g3 = 0;
+
+static int s1 = 8;
+static int s2;
+static int s3 = 0;
+
+int main(void) {
+    printf("%d %d %d %d %d %d\n", g1, g2, g3, s1, s2, s3);
+    return 0;
+}
+```
+
+先编译：
+
+```bash
+gcc -Wall -Wextra -o sections_demo sections_demo.c
+```
+
+再运行：
+
+```bash
+./sections_demo
+```
+
+<img
+  src="/static/images/Linux_study/bssvalue.png"
+  alt="未初始化的全局变量和静态变量运行时默认显示为 0"
+  width="700"
+/>
+
+这一步先说明一个现象：未初始化的全局变量和静态变量，默认会被清零；初始化为 0 的，也会是 0。
+
+不过到这里为止，我们还只是确认了程序行为正常，还没真正看到 `.data` 和 `.bss` 的归属。
+
+## 用 `nm` 看符号到底落在哪个段里
+
+```bash
+nm -S sections_demo | grep ' g1\| g2\| g3\| s1\| s2\| s3'
+```
+
+- `nm`：查看可执行文件里的符号信息
+- `-S`：把符号大小也显示出来
+
+<img
+  src="/static/images/Linux_study/nm_res.png"
+  alt="nm 查看 sections_demo 中不同变量所在的段"
+  width="700"
+/>
+
+这里的字母很关键：
+
+- `D`：已初始化的全局变量，位于 `.data`
+- `d`：已初始化的静态变量，位于 `.data`
+- `B`：未初始化或零初始化的全局变量，位于 `.bss`
+- `b`：未初始化或零初始化的静态变量，位于 `.bss`
+
+最后再配合这张图一起记，会清楚很多：
+
+<img
+  src="/static/images/Linux_study/fin_mem_pic.png"
+  alt="全局变量、静态变量、.data 和 .bss 的关系示意图"
+  width="700"
+/>
+
+## 小结
+
+这次最重要的收获，不是死记“栈在上、堆在下”这种印象图，而是先把判断逻辑建立起来：
+
+1. 先看变量的生命周期
+2. 再看它是函数自带、程序长期存在，还是运行时额外申请
+3. 最后再细分到具体段，比如 `.data` 和 `.bss`
+
+当这条线理顺以后，后面再去看函数调用、ELF 段、程序加载，很多东西都会自然接上。
