@@ -110,12 +110,12 @@ export default function Home({ posts }) {
                     <p className="cv-post-date">{formatDate(date, siteMetadata.locale)}</p>
                     <p className="cv-post-scan">scan ready</p>
                   </div>
-                  <div className="cv-post-body">
-                    <div className="cv-cat-status" aria-hidden="true">
-                      <span className="cv-cat-status-face">🐱</span>
-                      <span className="cv-cat-status-eyes">
-                        <span />
-                        <span />
+                    <div className="cv-post-body">
+                      <div className="cv-cat-status" aria-hidden="true">
+                        <span className="cv-cat-status-face">🐷</span>
+                        <span className="cv-cat-status-eyes">
+                          <span />
+                          <span />
                       </span>
                     </div>
                     <h3 className="cv-post-title">

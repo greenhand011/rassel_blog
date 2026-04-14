@@ -130,7 +130,7 @@ export default function ListLayoutWithTags({
                     </dl>
                     <div className="space-y-3">
                       <div className="cv-cat-status" aria-hidden="true">
-                        <span className="cv-cat-status-face">🐱</span>
+                        <span className="cv-cat-status-face">🐷</span>
                         <span className="cv-cat-status-eyes">
                           <span />
                           <span />

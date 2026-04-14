@@ -19,7 +19,7 @@ export default function PlayfulCursor() {
   const [active, setActive] = useState(false)
   const [pressed, setPressed] = useState(false)
   const [sparkles, setSparkles] = useState<Sparkle[]>([])
-  const symbols = ['🐟', '🐠', '✦']
+  const symbols = ['🍎', '🌽', '✦']
 
   useEffect(() => {
     const media = window.matchMedia('(hover: hover) and (pointer: fine)')
@@ -115,7 +115,7 @@ export default function PlayfulCursor() {
           pressed ? 'playful-cursor-pressed' : ''
         }`}
       >
-        <span className="playful-cursor-face">{active ? '😺' : '🐱'}</span>
+        <span className="playful-cursor-face">{active ? '🐷' : '🐽'}</span>
       </div>
       {sparkles.map((sparkle) => (
         <span
