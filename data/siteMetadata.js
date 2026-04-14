@@ -1,20 +1,35 @@
+const deployTarget = process.env.NEXT_PUBLIC_DEPLOY_TARGET || 'global'
+
+const siteUrl =
+  process.env.NEXT_PUBLIC_SITE_URL || 'https://tailwind-nextjs-starter-blog.vercel.app'
+const siteRepo =
+  process.env.NEXT_PUBLIC_SITE_REPO || 'https://github.com/greenhand011/rassel_blog'
+const buttondownEmbedUrl = process.env.NEXT_PUBLIC_BUTTONDOWN_EMBED_URL || ''
+
+const disableAnalytics =
+  process.env.NEXT_PUBLIC_DISABLE_ANALYTICS === '1' || deployTarget === 'china'
+const disableComments =
+  process.env.NEXT_PUBLIC_DISABLE_COMMENTS === '1' || deployTarget === 'china'
+const disableNewsletter =
+  process.env.NEXT_PUBLIC_DISABLE_NEWSLETTER === '1' ||
+  (deployTarget === 'china' && !buttondownEmbedUrl)
+
 /** @type {import("pliny/config").PlinyConfig } */
 const siteMetadata = {
   title: '网安菜鸟成长之路',
   author: 'Rassel',
   headerTitle: 'RasselBlog',
-  description: '一个网安小白记录自己的成长之路',
-  language: 'en-us',
-  theme: 'system', // system, dark or light
-  siteUrl: 'https://tailwind-nextjs-starter-blog.vercel.app',
-  siteRepo: 'https://github.com/timlrx/tailwind-nextjs-starter-blog',
+  description: '一个网络安全初学者记录自己成长路径的技术博客',
+  language: 'zh-CN',
+  theme: 'system',
+  siteUrl,
+  siteRepo,
   siteLogo: `${process.env.BASE_PATH || ''}/static/images/logo.png`,
   socialBanner: `${process.env.BASE_PATH || ''}/static/images/twitter-card.png`,
   mastodon: 'https://mastodon.social/@mastodonuser',
   email: 'rassel_work@outlook.com',
   github: 'https://github.com/greenhand011/rassel_blog',
   x: 'https://twitter.com/x',
-  // twitter: 'https://twitter.com/Twitter',
   facebook: 'https://facebook.com',
   youtube: 'https://youtube.com',
   linkedin: 'https://www.linkedin.com',
@@ -22,76 +37,42 @@ const siteMetadata = {
   instagram: 'https://www.instagram.com',
   medium: 'https://medium.com',
   bluesky: 'https://bsky.app/',
-  locale: 'en-US',
-  // set to true if you want a navbar fixed to the top
+  locale: 'zh-CN',
   stickyNav: false,
-  analytics: {
-    // If you want to use an analytics provider you have to add it to the
-    // content security policy in the `next.config.js` file.
-    // supports Plausible, Simple Analytics, Umami, Posthog or Google Analytics.
-    umamiAnalytics: {
-      // We use an env variable for this site to avoid other users cloning our analytics ID
-      umamiWebsiteId: process.env.NEXT_UMAMI_ID, // e.g. 123e4567-e89b-12d3-a456-426614174000
-      // You may also need to overwrite the script if you're storing data in the US - ex:
-      // src: 'https://us.umami.is/script.js'
-      // Remember to add 'us.umami.is' in `next.config.js` as a permitted domain for the CSP
-    },
-    // plausibleAnalytics: {
-    //   plausibleDataDomain: '', // e.g. tailwind-nextjs-starter-blog.vercel.app
-    // If you are hosting your own Plausible.
-    //   src: '', // e.g. https://plausible.my-domain.com/js/script.js
-    // },
-    // simpleAnalytics: {},
-    // posthogAnalytics: {
-    //   posthogProjectApiKey: '', // e.g. 123e4567-e89b-12d3-a456-426614174000
-    // },
-    // googleAnalytics: {
-    //   googleAnalyticsId: '', // e.g. G-XXXXXXX
-    // },
-  },
-  newsletter: {
-    // supports mailchimp, buttondown, convertkit, klaviyo, revue, emailoctopus, beehive
-    // Please add your .env file and modify it according to your selection
-    provider: 'buttondown',
-  },
-  comments: {
-    // If you want to use an analytics provider you have to add it to the
-    // content security policy in the `next.config.js` file.
-    // Select a provider and use the environment variables associated to it
-    // https://vercel.com/docs/environment-variables
-    provider: 'giscus',
-
-    giscusConfig: {
-      repo: 'greenhand011/rassel_blog',
-      repositoryId: 'R_kgDOQm-IBw',
-      category: 'Announcements',
-      categoryId: 'DIC_kwDOQm-IB84CzqxO',
-      mapping: 'pathname', // pathname 表示每个页面根据路径对应一个评论区
-      reactions: '1', // 开启表情
-      metadata: '0',
-
-      // 主题
-      theme: 'light',
-      darkTheme: 'transparent_dark',
-
-      // 如果你想自定义主题（通常不需要），可以写成：
-      // theme: 'custom',
-      // themeURL: '你的css文件路径'
-    },
-  },
+  analytics: disableAnalytics
+    ? {}
+    : {
+        umamiAnalytics: {
+          umamiWebsiteId: process.env.NEXT_UMAMI_ID,
+        },
+      },
+  newsletter: disableNewsletter
+    ? null
+    : {
+        provider: 'buttondown',
+        formAction: buttondownEmbedUrl || null,
+      },
+  comments: disableComments
+    ? null
+    : {
+        provider: 'giscus',
+        giscusConfig: {
+          repo: 'greenhand011/rassel_blog',
+          repositoryId: 'R_kgDOQm-IBw',
+          category: 'Announcements',
+          categoryId: 'DIC_kwDOQm-IB84CzqxO',
+          mapping: 'pathname',
+          reactions: '1',
+          metadata: '0',
+          theme: 'light',
+          darkTheme: 'transparent_dark',
+        },
+      },
   search: {
-    provider: 'kbar', // kbar or algolia
+    provider: 'kbar',
     kbarConfig: {
-      searchDocumentsPath: `${process.env.BASE_PATH || ''}/search.json`, // path to load documents to search
+      searchDocumentsPath: `${process.env.BASE_PATH || ''}/search.json`,
     },
-    // provider: 'algolia',
-    // algoliaConfig: {
-    //   // The application ID provided by Algolia
-    //   appId: 'R2IYF7ETH7',
-    //   // Public API key: it is safe to commit it
-    //   apiKey: '599cec31baffa4868cae4e79f180729b',
-    //   indexName: 'docsearch',
-    // },
   },
 }
 
