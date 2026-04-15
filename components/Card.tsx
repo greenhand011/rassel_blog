@@ -1,12 +1,12 @@
 import Image from './Image'
 import Link from './Link'
 
-const Card = ({ title, description, imgSrc, href }) => (
-  <div className="md max-w-[544px] p-4 md:w-1/2">
+const Card = ({ title, description, imgSrc, href, status, articleCount, period, stack }) => (
+  <div className="max-w-[544px] p-4 md:w-1/2">
     <div
-      className={`${
-        imgSrc && 'h-full'
-      } overflow-hidden rounded-md border-2 border-gray-200/60 dark:border-gray-700/60`}
+      className={`cv-panel relative overflow-hidden rounded-[1.6rem] ${
+        imgSrc ? 'h-full' : ''
+      }`}
     >
       {imgSrc &&
         (href ? (
@@ -14,7 +14,7 @@ const Card = ({ title, description, imgSrc, href }) => (
             <Image
               alt={title}
               src={imgSrc}
-              className="object-cover object-center md:h-36 lg:h-48"
+              className="object-cover object-center md:h-44 lg:h-56"
               width={544}
               height={306}
             />
@@ -23,13 +23,18 @@ const Card = ({ title, description, imgSrc, href }) => (
           <Image
             alt={title}
             src={imgSrc}
-            className="object-cover object-center md:h-36 lg:h-48"
+            className="object-cover object-center md:h-44 lg:h-56"
             width={544}
             height={306}
           />
         ))}
       <div className="p-6">
-        <h2 className="mb-3 text-2xl leading-8 font-bold tracking-tight">
+        <div className="mb-4 flex flex-wrap gap-2">
+          <span className="cv-tag">{status}</span>
+          <span className="cv-tag">{`${articleCount} 篇记录`}</span>
+          <span className="cv-tag">{period}</span>
+        </div>
+        <h2 className="mb-3 text-2xl leading-8 font-bold tracking-tight text-gray-950 dark:text-white">
           {href ? (
             <Link href={href} aria-label={`Link to ${title}`}>
               {title}
@@ -38,14 +43,21 @@ const Card = ({ title, description, imgSrc, href }) => (
             title
           )}
         </h2>
-        <p className="prose mb-3 max-w-none text-gray-500 dark:text-gray-400">{description}</p>
+        <p className="prose mb-5 max-w-none text-gray-600 dark:text-gray-300">{description}</p>
+        <div className="mb-5 flex flex-wrap gap-2">
+          {stack?.map((item) => (
+            <span key={item} className="cv-chip">
+              {item}
+            </span>
+          ))}
+        </div>
         {href && (
           <Link
             href={href}
-            className="text-primary-500 hover:text-primary-600 dark:hover:text-primary-400 text-base leading-6 font-medium"
+            className="cv-inline-link"
             aria-label={`Link to ${title}`}
           >
-            Learn more &rarr;
+            查看项目记录
           </Link>
         )}
       </div>
