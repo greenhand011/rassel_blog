@@ -14,7 +14,8 @@ export default function Projects() {
             Projects
           </h1>
           <p className="mt-4 max-w-3xl text-lg leading-8 text-gray-600 dark:text-gray-300">
-            这里放的是正在持续推进的系列项目。每个项目卡片会链接到它的起始文章，你可以顺着开发记录继续往下读，也能快速看到当前阶段、技术栈和已经发布的内容数量。
+            这里放的是正在持续推进的系列项目。每张卡片都会链接到这个项目的起始文章，
+            你可以顺着开发记录往下读，也可以快速看到当前阶段、技术栈和已经发布的内容数量。
           </p>
         </div>
         <div className="container py-4">

@@ -1,4 +1,4 @@
-interface Project {
+export interface Project {
   title: string
   description: string
   href?: string
@@ -7,19 +7,29 @@ interface Project {
   articleCount: number
   period: string
   stack: string[]
+  articles: string[]
 }
 
 const projectsData: Project[] = [
   {
     title: 'RetroPop Mini',
     description:
-      '一个围绕嵌入式交互、状态机设计、GPIO 输入控制与权限收缩持续推进的小型项目。内容按 day-by-day 的方式记录，从按钮接线、资源映射、输入扩展到像素级移动重构，把实现过程和安全思考一起留下来。',
+      '一个围绕掌机交互、状态机设计、GPIO 输入扩展和权限收缩持续推进的小型项目。内容按开发日志顺序展开，从点亮开机图到输入控制重构，把实现过程和安全思考一起留下来。',
     imgSrc: '/static/images/GameCC/day1-result.png',
-    href: '/blog/retropop-mini-day2-state-machine-and-gpio-buttons',
+    href: '/blog/RetroPop_Mini',
     status: '持续迭代中',
-    articleCount: 6,
-    period: 'Day 2 - Day 7',
+    articleCount: 7,
+    period: 'Day 1 - Day 7',
     stack: ['ESP32-C3', 'GPIO', 'State Machine', 'Embedded UI'],
+    articles: [
+      'RetroPop_Mini',
+      'retropop-mini-day2-state-machine-and-gpio-buttons',
+      'retropop-mini-day3-gpio-resource-map-and-attack-surface',
+      'retropop-mini-day4-left-right-buttons-and-input-expansion',
+      'retropop-mini-day5-state-machine-input-permission-control',
+      'retropop-mini-day6-input-deprivilege-direction-control-upgrade',
+      'retropop-mini-day7-pixel-to-grid-movement-refactor',
+    ],
   },
   {
     title: 'ADAS Sensor Lab',
@@ -31,18 +41,33 @@ const projectsData: Project[] = [
     articleCount: 4,
     period: 'Day 2 - Day 5',
     stack: ['ESP32', 'MPU6050', 'I2C', 'Diagnostics'],
+    articles: [
+      'adas-day2-esp32-mpu6050-read-imu-data',
+      'adas-day3-sensor-module-first-security-awareness',
+      'adas-day4-failure-counts-and-fault-grading',
+      'adas-day5-first-diagnostic-interface',
+    ],
   },
   {
     title: '嵌入式安全从 0 到 1',
     description:
-      '一个面向入门阶段的嵌入式安全基础系列，按教学顺序把编译、汇编、链接，程序内存布局，以及指针、数组和字符串的关系串成一条完整学习路径。适合作为后续继续写结构体、联合体、位域、ELF 和底层调试内容的起点。',
+      '一个面向入门阶段的嵌入式安全基础系列，按教学顺序把编译、汇编、链接，程序内存布局，以及指针、数组和字符串的关系串成一条完整学习路径。',
     imgSrc: '/static/images/Linux_study/Compilation.png',
     href: '/blog/what-compilation-assembly-and-linking-actually-do',
     status: '教学系列进行中',
     articleCount: 3,
     period: '2026-04-11 -> 2026-04-14',
     stack: ['C', 'Memory Layout', 'Pointers', 'Compilation'],
+    articles: [
+      'what-compilation-assembly-and-linking-actually-do',
+      'memory-layout-fundamentals-stack-heap-and-global-static-data-areas',
+      'The_Real_Relationship_Between-Pointers-Arrays-and-Strings-in-C',
+    ],
   },
 ]
+
+export function getProjectByArticleSlug(slug: string) {
+  return projectsData.find((project) => project.articles.includes(slug))
+}
 
 export default projectsData

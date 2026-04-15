@@ -1,7 +1,18 @@
 import Image from './Image'
 import Link from './Link'
 
-const Card = ({ title, description, imgSrc, href, status, articleCount, period, stack }) => (
+interface CardProps {
+  title: string
+  description: string
+  imgSrc?: string
+  href?: string
+  status: string
+  articleCount: number
+  period: string
+  stack: string[]
+}
+
+const Card = ({ title, description, imgSrc, href, status, articleCount, period, stack }: CardProps) => (
   <div className="max-w-[544px] p-4 md:w-1/2">
     <div
       className={`cv-panel relative overflow-hidden rounded-[1.6rem] ${
@@ -52,11 +63,7 @@ const Card = ({ title, description, imgSrc, href, status, articleCount, period, 
           ))}
         </div>
         {href && (
-          <Link
-            href={href}
-            className="cv-inline-link"
-            aria-label={`Link to ${title}`}
-          >
+          <Link href={href} className="cv-inline-link" aria-label={`Link to ${title}`}>
             查看项目记录
           </Link>
         )}

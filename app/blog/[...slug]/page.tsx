@@ -12,7 +12,9 @@ import PostLayout from '@/layouts/PostLayout'
 import PostBanner from '@/layouts/PostBanner'
 import { Metadata } from 'next'
 import siteMetadata from '@/data/siteMetadata'
+import { getProjectByArticleSlug } from '@/data/projectsData'
 import { notFound } from 'next/navigation'
+import type { CoreContent } from 'pliny/utils/contentlayer'
 
 const defaultLayout = 'PostLayout'
 const layouts = {
@@ -80,16 +82,31 @@ export const generateStaticParams = async () => {
 export default async function Page(props: { params: Promise<{ slug: string[] }> }) {
   const params = await props.params
   const slug = decodeURI(params.slug.join('/'))
-  // Filter out drafts in production
   const sortedCoreContents = allCoreContent(sortPosts(allBlogs))
   const postIndex = sortedCoreContents.findIndex((p) => p.slug === slug)
   if (postIndex === -1) {
     return notFound()
   }
 
-  const prev = sortedCoreContents[postIndex + 1]
-  const next = sortedCoreContents[postIndex - 1]
   const post = allBlogs.find((p) => p.slug === slug) as Blog
+  const contentBySlug = new Map(sortedCoreContents.map((item) => [item.slug, item]))
+  const project = getProjectByArticleSlug(slug)
+
+  let prev: (typeof sortedCoreContents)[number] | undefined = sortedCoreContents[postIndex + 1]
+  let next: (typeof sortedCoreContents)[number] | undefined = sortedCoreContents[postIndex - 1]
+
+  if (project) {
+    const projectArticles = project.articles
+      .map((articleSlug) => contentBySlug.get(articleSlug))
+      .filter((item): item is CoreContent<Blog> => Boolean(item))
+    const projectIndex = projectArticles.findIndex((item) => item?.slug === slug)
+
+    prev = projectIndex > 0 ? projectArticles[projectIndex - 1] : undefined
+    next = projectIndex >= 0 && projectIndex < projectArticles.length - 1
+      ? projectArticles[projectIndex + 1]
+      : undefined
+  }
+
   const authorList = post?.authors || ['default']
   const authorDetails = authorList.map((author) => {
     const authorResults = allAuthors.find((p) => p.slug === author)
