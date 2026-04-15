@@ -32,6 +32,17 @@ const projectsData: Project[] = [
     period: 'Day 2 - Day 5',
     stack: ['ESP32', 'MPU6050', 'I2C', 'Diagnostics'],
   },
+  {
+    title: '嵌入式安全从 0 到 1',
+    description:
+      '一个面向入门阶段的嵌入式安全基础系列，按教学顺序把编译、汇编、链接，程序内存布局，以及指针、数组和字符串的关系串成一条完整学习路径。适合作为后续继续写结构体、联合体、位域、ELF 和底层调试内容的起点。',
+    imgSrc: '/static/images/Linux_study/Compilation.png',
+    href: '/blog/what-compilation-assembly-and-linking-actually-do',
+    status: '教学系列进行中',
+    articleCount: 3,
+    period: '2026-04-11 -> 2026-04-14',
+    stack: ['C', 'Memory Layout', 'Pointers', 'Compilation'],
+  },
 ]
 
 export default projectsData
