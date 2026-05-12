@@ -1,0 +1,1460 @@
+---
+title: 'D4：struct / union / enum / bitfield —— 做一个 ECU 报文结构体'
+date: '2026-05-12'
+tags: ['Embedded']
+draft: false
+summary: '用车载 ECU 报文这个例子，把 C 语言里的 struct、union、enum、bitfield 串起来，最终产出一个可复用的 ECU 报文结构体。'
+---
+
+# struct / union / enum / bitfield
+
+
+如果只是背语法，`struct`、`union`、`enum`、`bitfield` 很容易变成几个孤立的知识点：会写，但是不知道什么时候用。真正到嵌入式项目里，还是会卡住。
+
+所以换一个角度：
+
+> 我们要站在 ECU 软件工程师的视角，用这 4 个语法做出一个“ECU 报文结构体”。
+
+这件事和车载安全、诊断、刷写、日志、通信、状态机都有关系。因为 ECU 软件里大量代码的本质都是：
+
+> 把真实世界里的信号、状态、报文、错误、权限，转换成 C 语言里可以管理的数据结构。
+
+---
+
+## 0. 先补一点车载背景
+
+在进入 C 语言之前，先把两个车载里经常出现的词讲清楚：CAN 和 UDS。
+
+### 0.1 CAN 是什么？
+
+CAN，全称是 **Controller Area Network**，可以先简单理解成：
+
+> 汽车内部 ECU 之间用来通信的一条“总线”。
+
+一辆车里有很多 ECU，例如发动机 ECU、制动 ECU、车身控制 ECU、仪表 ECU、ADAS 控制器等。它们不能各说各话，所以需要一种可靠的通信方式。CAN 就是最常见的一种车载通信方式。
+
+CAN 的几个特点：
+
+- **适合汽车环境**：抗干扰能力强，适合车上这种电磁环境复杂的地方。
+- **多个 ECU 可以一起用**：不是一对一通信，而是很多 ECU 都挂在一条总线上。
+- **以报文为单位通信**：每次传输的不是“文件”，而是一帧一帧的 CAN 报文。
+- **每帧报文有 CAN ID**：CAN ID 不只是编号，还和优先级、报文含义有关。
+
+比如一帧 CAN 报文可以大概理解成：
+
+```text
+CAN ID = 0x100
+DLC    = 8
+DATA   = 01 02 03 04 05 06 07 08
+```
+
+其中：
+
+- `CAN ID`：说明这帧报文是谁、是什么含义。
+- `DLC`：说明数据区有几个字节。
+- `DATA`：真正的数据内容。
+
+可以把 CAN 想成汽车里的“公路”。它负责把数据从一个 ECU 送到另一个 ECU。
+
+---
+
+### 0.2 UDS 是什么？
+
+UDS，全称是 **Unified Diagnostic Services**，中文通常叫统一诊断服务。
+
+它不是一条物理总线，而是一套诊断协议。
+
+> CAN 负责把数据送过去，UDS 规定诊断数据应该长什么样、代表什么意思、ECU 应该怎么回应。
+
+比如 4S 店用诊断仪连接 OBD 接口，读取故障码、清除故障码、读取车辆信息、执行 ECU Reset、刷写 ECU，这些动作背后很多都和 UDS 有关。
+
+UDS 里面有很多服务 ID，例如：
+
+| UDS 服务 | 含义 |
+|---|---|
+| `0x10` | 切换诊断会话 |
+| `0x11` | ECU Reset |
+| `0x22` | 读取某个数据标识 DID |
+| `0x27` | 安全访问 Security Access |
+| `0x2E` | 写入某个数据标识 DID |
+| `0x31` | 例程控制 Routine Control |
+
+
+> CAN 像公路，UDS 像这条公路上跑的“诊断快递单”。
+
+CAN 负责传输，UDS 负责定义诊断请求和响应的格式。
+
+---
+
+## 1. 这 4 个 C 语法分别解决什么问题？
+
+
+| C 语法 | 它解决的问题 | 在 ECU 里的典型用途 |
+|---|---|---|
+| `struct` | 把多个字段打包成一个对象 | 一帧 CAN 报文、一个传感器数据包、一个诊断请求 |
+| `enum` | 给数字起有意义的名字 | 报文类型、UDS 服务 ID、错误码、状态机状态 |
+| `union` | 同一块内存可以有多种解释方式 | 同一段 payload 可能是传感器数据，也可能是诊断请求 |
+| `bitfield` | 用几个 bit 表示多个开关状态 | valid、error、need_response、authenticated 等标志位 |
+
+
+> `struct` 管整体，`enum` 管类型，`union` 管多种 payload，`bitfield` 管小标志位。
+
+后面所有代码都会围绕这句话展开。
+
+---
+
+# 2. struct：把零散字段变成一个“对象”
+
+## 2.1 为什么需要 struct？
+
+先看一个最简单的问题。
+
+一帧 CAN 报文不是只有 data，它通常至少包含：
+
+- CAN ID
+- DLC 长度
+- 数据区
+- 时间戳
+- 通道号
+- 状态标志
+
+如果不用 `struct`，你可能会写成这样：
+
+```c
+uint32_t can_id;
+uint8_t dlc;
+uint8_t data[8];
+uint32_t timestamp_ms;
+```
+
+这些变量本来是同一帧报文的一部分，但是在代码里是散开的。
+
+这就像你要描述一个人，却把姓名、年龄、身高、地址分别扔在不同地方。代码小的时候还能忍，代码一大就很难维护。
+
+所以我们用 `struct` 把它们包起来：
+
+```c
+typedef struct {
+    uint32_t can_id;
+    uint8_t dlc;
+    uint8_t data[8];
+    uint32_t timestamp_ms;
+} CanFrame;
+```
+
+这样之后，一整帧 CAN 报文就可以用一个变量表示：
+
+```c
+CanFrame frame;
+```
+
+这就是 `struct` 最核心的价值：
+
+> 把现实里的一个对象，映射成 C 语言里的一个结构体。
+
+---
+
+## 2.2 struct 怎么使用？
+
+```c
+CanFrame frame = {0};
+
+frame.can_id = 0x100;
+frame.dlc = 8;
+frame.data[0] = 0x11;
+frame.data[1] = 0x22;
+frame.timestamp_ms = 12345;
+```
+
+这里的 `.` 表示访问结构体里的成员。
+
+读起来也很自然：
+
+```c
+frame.can_id
+```
+
+就是：这一帧报文的 CAN ID。
+
+---
+
+## 2.3 struct 在内存里大概是什么样？
+
+比如：
+
+```c
+typedef struct {
+    uint32_t can_id;
+    uint8_t dlc;
+    uint8_t data[8];
+} CanFrame;
+```
+
+可以先粗略理解成：
+
+```text
+CanFrame
+┌───────────────┐
+│ can_id        │  4 bytes
+├───────────────┤
+│ dlc           │  1 byte
+├───────────────┤
+│ data[0]       │
+│ data[1]       │
+│ ...           │  8 bytes
+│ data[7]       │
+└───────────────┘
+```
+
+但是这里有一个很重要的坑：
+
+> 结构体真实占用的内存，不一定等于所有字段大小简单相加。
+
+原因是 **内存对齐 padding**。
+
+例如：
+
+```c
+typedef struct {
+    uint8_t a;
+    uint32_t b;
+} Test;
+```
+
+你可能以为它是：
+
+```text
+1 byte + 4 bytes = 5 bytes
+```
+
+但实际很多平台上它可能是 8 字节。因为 CPU 更喜欢让 `uint32_t` 放在 4 字节对齐的位置上，中间会补一些空字节。
+
+这点在 ECU 报文里非常重要。
+
+因为 CAN 报文是精确到字节的：
+
+```text
+byte0 是什么，byte1 是什么，byte2 是什么，都必须说清楚。
+```
+
+所以：
+
+> `struct` 适合在程序内部组织数据，但不要随便把整个 struct 直接 memcpy 到 CAN 总线上发送。
+
+这个点后面还会再强调。
+
+---
+
+# 3. enum：给数字起一个人能看懂的名字
+
+## 3.1 为什么需要 enum？
+
+当然可以这样写：
+
+```c
+uint8_t msg_type = 1;
+```
+
+但是问题来了：
+
+> `1` 是什么意思？传感器报文？诊断请求？心跳？错误？
+
+如果一个项目里到处都是 `1`、`2`、`3`，后面维护的人会非常痛苦。甚至过几天你自己回来看，也不一定记得。
+
+所以我们用 `enum`：
+
+```c
+typedef enum {
+    ECU_MSG_UNKNOWN = 0,
+    ECU_MSG_SENSOR = 1,
+    ECU_MSG_DIAG_REQUEST = 2,
+    ECU_MSG_DIAG_RESPONSE = 3,
+    ECU_MSG_HEARTBEAT = 4
+} EcuMsgType;
+```
+
+之后代码就可以这样写：
+
+```c
+EcuMsgType type = ECU_MSG_SENSOR;
+```
+
+这时候意思就很清楚：
+
+> 这是一帧传感器报文。
+
+`enum` 的作用不是让机器更聪明，而是让人更不容易犯错。
+
+---
+
+## 3.2 enum 在 ECU 里的常见用途
+
+### 3.2.1 报文类型
+
+```c
+typedef enum {
+    ECU_MSG_UNKNOWN = 0,
+    ECU_MSG_SENSOR = 1,
+    ECU_MSG_DIAG_REQUEST = 2,
+    ECU_MSG_DIAG_RESPONSE = 3,
+    ECU_MSG_HEARTBEAT = 4,
+    ECU_MSG_SECURITY_EVENT = 5
+} EcuMsgType;
+```
+
+这里的 `EcuMsgType` 用来说明：当前这条 ECU 报文到底是什么类型。
+
+---
+
+### 3.2.2 UDS 服务 ID
+
+UDS 服务 ID 本身就是一些数字，例如 `0x22`、`0x2E`、`0x27`。
+
+如果直接在代码里写：
+
+```c
+if (sid == 0x2E) {
+    // ...
+}
+```
+
+这段代码当然能跑，但不够清楚。更好的写法是：
+
+```c
+typedef enum {
+    UDS_SID_NONE = 0x00,
+    UDS_SID_DIAGNOSTIC_SESSION_CONTROL = 0x10,
+    UDS_SID_ECU_RESET = 0x11,
+    UDS_SID_READ_DATA_BY_IDENTIFIER = 0x22,
+    UDS_SID_SECURITY_ACCESS = 0x27,
+    UDS_SID_WRITE_DATA_BY_IDENTIFIER = 0x2E,
+    UDS_SID_ROUTINE_CONTROL = 0x31
+} UdsServiceId;
+```
+
+以后判断写 DID 请求时，就可以这样写：
+
+```c
+if (sid == UDS_SID_WRITE_DATA_BY_IDENTIFIER) {
+    // 这是写 DID 请求
+}
+```
+
+这就比 `0x2E` 直观很多。
+
+---
+
+### 3.2.3 错误状态
+
+ECU 处理报文时，经常会出现各种状态：
+
+- 正常
+- DLC 不对
+- CAN ID 不合法
+- 鉴权失败
+- CRC 校验失败
+- 报文类型未知
+
+这些也适合用 `enum`：
+
+```c
+typedef enum {
+    ECU_STATUS_OK = 0,
+    ECU_STATUS_INVALID_DLC,
+    ECU_STATUS_INVALID_CAN_ID,
+    ECU_STATUS_AUTH_FAILED,
+    ECU_STATUS_CRC_FAILED,
+    ECU_STATUS_UNKNOWN_TYPE
+} EcuStatus;
+```
+
+注意这里后面几个没有手动写数字，C 会自动递增。
+
+也就是说：
+
+```text
+ECU_STATUS_OK             = 0
+ECU_STATUS_INVALID_DLC    = 1
+ECU_STATUS_INVALID_CAN_ID = 2
+...
+```
+
+---
+
+# 4. union：同一段 payload，可以按不同方式解释
+
+## 4.1 为什么需要 union？
+
+ECU 报文有一个很现实的问题：
+
+> 同样都是 8 字节 payload，不同 CAN ID 下含义完全不一样。
+
+比如：
+
+```text
+CAN ID 0x100：传感器数据
+CAN ID 0x700：诊断请求
+CAN ID 0x708：诊断响应
+```
+
+它们看起来都是 8 个字节：
+
+```text
+01 02 03 04 05 06 07 08
+```
+
+但解释方式可能完全不同。
+
+如果是传感器报文，前两个字节可能是加速度 X；如果是诊断请求，第一个字节可能是 UDS Service ID。
+
+这时候如果你永远只写：
+
+```c
+uint8_t data[8];
+```
+
+当然也能做，但是每次都要靠人工去记：
+
+```text
+data[0] 到底是 SID，还是 accel_x 的低字节？
+```
+
+这就很容易出错。
+
+所以我们可以用 `union` 做一个“多种解释方式的 payload”。
+
+---
+
+## 4.2 union 的基本写法
+
+```c
+typedef union {
+    uint8_t raw[8];
+
+    struct {
+        int16_t accel_x;
+        int16_t accel_y;
+        int16_t gyro_z;
+        uint8_t status;
+        uint8_t counter;
+    } sensor;
+
+    struct {
+        uint8_t sid;
+        uint16_t did;
+        uint8_t param[5];
+    } diag_req;
+} EcuPayload;
+```
+
+这段代码的意思是：
+
+> 同一块 8 字节左右的内存，可以被看成 raw 原始字节，也可以被看成 sensor 传感器结构，也可以被看成 diag_req 诊断请求结构。
+
+`union` 和 `struct` 最大的区别是：
+
+- `struct`：每个成员都有自己的内存位置。
+- `union`：所有成员共用同一块内存。
+
+---
+
+## 4.3 union 的内存特点
+
+比如：
+
+```c
+typedef union {
+    uint8_t raw[8];
+    uint32_t value32;
+} Data;
+```
+
+它不是 `raw[8]` 和 `value32` 各占一份空间，而是共用同一块空间：
+
+```text
+同一块内存：
+┌────────────────────────┐
+│ raw[0] raw[1] ...      │
+│ value32 也看这块内存   │
+└────────────────────────┘
+```
+
+所以 `union` 的大小通常等于里面最大成员的大小。
+
+这点很适合 payload，因为一帧报文在某一刻只会是一种含义，不可能同时既是传感器数据，又是诊断请求。
+
+---
+
+## 4.4 union 最大的风险：你必须知道当前是哪一种解释
+
+`union` 很方便，但它有一个危险点：
+
+> C 语言不会自动记住你现在往 union 里放的是哪一种数据。
+
+所以你必须自己加一个标签。
+
+这个标签通常就是 `enum`。
+
+```c
+typedef struct {
+    EcuMsgType type;
+    EcuPayload payload;
+} EcuMessage;
+```
+
+这里的逻辑是：
+
+```text
+type = ECU_MSG_SENSOR        → payload.sensor 有效
+type = ECU_MSG_DIAG_REQUEST  → payload.diag_req 有效
+type = ECU_MSG_DIAG_RESPONSE → payload.diag_resp 有效
+```
+
+这就是 C 语言里非常常见的一种组合：
+
+> `enum + union = C 语言里的简易多态。`
+
+多态这个词听起来很高级，其实这里的大白话就是：
+
+> 同一个 payload 盒子，根据 type 标签不同，用不同方式解释。
+
+---
+
+## 4.5 一个非常简单的生活例子
+
+先不用车载，拿一个“贴标签的盒子”来理解：
+
+```c
+#include <stdio.h>
+#include <string.h>
+
+// 1. 盒子里的东西有两种类型
+typedef enum {
+    ITEM_APPLE = 1,
+    ITEM_WORD  = 2
+} ItemType;
+
+// 2. 同一个盒子，可以放数字，也可以放字符串
+typedef union {
+    int apple_value;
+    char word[10];
+} MagicBox;
+
+// 3. 标签 + 盒子内容
+typedef struct {
+    ItemType type;
+    MagicBox content;
+} LabeledBox;
+
+int main(void)
+{
+    LabeledBox box1;
+    box1.type = ITEM_APPLE;
+    box1.content.apple_value = 10;
+
+    if (box1.type == ITEM_APPLE) {
+        printf("盒子里是苹果，值：%d\n", box1.content.apple_value);
+    }
+
+    LabeledBox box2;
+    box2.type = ITEM_WORD;
+    strcpy(box2.content.word, "hello");
+
+    if (box2.type == ITEM_WORD) {
+        printf("盒子里是一句话：%s\n", box2.content.word);
+    }
+
+    return 0;
+}
+```
+
+这个例子真正想说明的是：
+
+> 读 union 前，先看 enum 标签。
+
+如果标签是苹果，就按苹果读；如果标签是字符串，就按字符串读。
+
+在 ECU 里也是一样：
+
+> 读 payload 前，先看 type。
+
+---
+
+# 5. bitfield：用几个 bit 表示多个开关
+
+## 5.1 为什么需要 bitfield？
+
+很多 ECU 状态其实只是开关。
+
+比如一条报文可能有这些状态：
+
+- 数据是否有效
+- 是否有错误
+- 是否需要响应
+- 是否已经通过认证
+- 是否加密
+- 是否来自诊断通道
+
+最直观的写法当然是：
+
+```c
+uint8_t is_valid;
+uint8_t has_error;
+uint8_t need_response;
+uint8_t authenticated;
+uint8_t encrypted;
+uint8_t from_diag;
+```
+
+这样写很清楚，但有点浪费。每个状态只需要 0 或 1，本质上只需要 1 个 bit，但这里每个都用了 1 个字节。
+
+所以可以用 `bitfield`：
+
+```c
+typedef struct {
+    uint8_t valid         : 1;
+    uint8_t error         : 1;
+    uint8_t need_response : 1;
+    uint8_t authenticated : 1;
+    uint8_t encrypted     : 1;
+    uint8_t from_diag     : 1;
+    uint8_t reserved      : 2;
+} EcuFlags;
+```
+
+这里的 `: 1` 表示这个字段只占 1 个 bit。
+
+这些字段加起来：
+
+```text
+1 + 1 + 1 + 1 + 1 + 1 + 2 = 8 bit
+```
+
+刚好 1 字节。
+
+---
+
+## 5.2 bitfield 怎么理解？
+
+可以把它想成一个 8 bit 的小格子：
+
+```text
+bit7 bit6 bit5 bit4 bit3 bit2 bit1 bit0
+ └ reserved ┘ from  enc  auth resp err valid
+```
+
+对应到代码里就是：
+
+```c
+EcuFlags flags = {0};
+
+flags.valid = 1;
+flags.need_response = 1;
+flags.authenticated = 1;
+```
+
+这样写比手动位运算更容易看懂。
+
+---
+
+## 5.3 但是 bitfield 不能乱用
+
+这个地方非常重要。
+
+`bitfield` 适合程序内部使用，但不建议直接当作通信协议格式。
+
+原因是：
+
+- 不同编译器可能安排 bit 的顺序不同。
+- 不同 CPU 大小端不同。
+- 不同 ABI 对 bitfield 的对齐规则也可能不同。
+
+所以如果你要定义一个严格的 CAN payload 格式，尤其是安全相关通信，不建议直接：
+
+```c
+memcpy(can_data, &flags, sizeof(flags));
+```
+
+更稳的方式是用 `uint8_t flags` 加位掩码：
+
+```c
+#define ECU_FLAG_VALID          (1u << 0)
+#define ECU_FLAG_ERROR          (1u << 1)
+#define ECU_FLAG_NEED_RESPONSE  (1u << 2)
+#define ECU_FLAG_AUTHENTICATED  (1u << 3)
+#define ECU_FLAG_ENCRYPTED      (1u << 4)
+#define ECU_FLAG_FROM_DIAG      (1u << 5)
+```
+
+使用时：
+
+```c
+uint8_t flags = 0;
+
+flags |= ECU_FLAG_VALID;
+flags |= ECU_FLAG_AUTHENTICATED;
+
+if ((flags & ECU_FLAG_AUTHENTICATED) != 0u) {
+    // 已认证
+}
+```
+
+这里记住一个工程经验：
+
+| 场景 | 建议 |
+|---|---|
+| 程序内部状态管理 | 可以用 bitfield，代码直观 |
+| 精确通信协议格式 | 更推荐 `uint8_t flags + 位掩码` |
+| 安全关键通信 | 不要依赖编译器 bitfield 排列 |
+
+---
+
+# 6. 把四个语法组合起来：做一个 ECU 报文结构体
+
+现在开始做今天的产出。
+
+我们要设计一个结构体，它能够表示 ECU 内部的一条报文。
+
+它应该包含：
+
+- CAN 基础信息：CAN ID、DLC、通道号、时间戳
+- 报文类型：传感器、诊断请求、诊断响应、安全事件等
+- 标志位：valid、error、need_response、authenticated 等
+- payload：真正的数据内容
+- 处理状态：OK、鉴权失败、DLC 错误等
+
+最终结构大概是这样：
+
+```text
+EcuMessage
+│
+├── EcuCanHeader header
+│   ├── can_id
+│   ├── dlc
+│   ├── channel
+│   └── timestamp_ms
+│
+├── EcuMsgType type
+│   └── 决定 payload 怎么解释
+│
+├── EcuFlags flags
+│   ├── valid
+│   ├── error
+│   ├── need_response
+│   ├── authenticated
+│   └── from_diag
+│
+├── EcuPayload payload
+│   ├── raw[8]
+│   ├── sensor
+│   ├── diag_req
+│   ├── diag_resp
+│   └── security_event
+│
+└── EcuStatus status
+    └── 当前处理结果
+```
+
+这就已经不是孤立语法了，而是一个小型 ECU 报文模型。
+
+---
+
+# 7. 代码产出：`ecu_message.h`
+
+下面这份代码可以直接作为头文件保存。
+
+```c
+#ifndef ECU_MESSAGE_H
+#define ECU_MESSAGE_H
+
+#include <stdint.h>
+#include <stdbool.h>
+
+/*
+ * ECU message type.
+ *
+ * type 的作用是告诉程序：payload 当前应该按哪种格式解释。
+ */
+typedef enum {
+    ECU_MSG_UNKNOWN = 0,
+
+    ECU_MSG_SENSOR = 1,          // 传感器数据
+    ECU_MSG_DIAG_REQUEST = 2,    // 诊断请求，例如 UDS 0x22
+    ECU_MSG_DIAG_RESPONSE = 3,   // 诊断响应
+    ECU_MSG_HEARTBEAT = 4,       // 心跳报文
+    ECU_MSG_SECURITY_EVENT = 5   // 安全事件日志
+} EcuMsgType;
+
+
+/*
+ * 常见 UDS service ID。
+ */
+typedef enum {
+    UDS_SID_NONE = 0x00,
+
+    UDS_SID_DIAGNOSTIC_SESSION_CONTROL = 0x10,
+    UDS_SID_ECU_RESET = 0x11,
+    UDS_SID_READ_DATA_BY_IDENTIFIER = 0x22,
+    UDS_SID_SECURITY_ACCESS = 0x27,
+    UDS_SID_WRITE_DATA_BY_IDENTIFIER = 0x2E,
+    UDS_SID_ROUTINE_CONTROL = 0x31
+} UdsServiceId;
+
+
+/*
+ * ECU message process status.
+ *
+ * 这个状态表示 ECU 软件处理报文后的结果。
+ */
+typedef enum {
+    ECU_STATUS_OK = 0,
+    ECU_STATUS_INVALID_DLC,
+    ECU_STATUS_INVALID_CAN_ID,
+    ECU_STATUS_AUTH_FAILED,
+    ECU_STATUS_CRC_FAILED,
+    ECU_STATUS_UNKNOWN_TYPE
+} EcuStatus;
+
+
+/*
+ * Bitfield flags.
+ *
+ * 适合 ECU 内部状态管理。
+ * 不建议直接把这个结构体 memcpy 到 CAN payload 中发送。
+ */
+typedef struct {
+    uint8_t valid          : 1;  // 数据是否有效
+    uint8_t error          : 1;  // 是否有错误
+    uint8_t need_response  : 1;  // 是否需要响应
+    uint8_t authenticated  : 1;  // 是否通过安全校验
+    uint8_t encrypted      : 1;  // payload 是否加密
+    uint8_t from_diag      : 1;  // 是否来自诊断通道
+    uint8_t reserved       : 2;  // 保留位，方便后续扩展
+} EcuFlags;
+
+
+/*
+ * CAN header.
+ *
+ * 这里放的是一帧 CAN/CAN FD 报文的基础信息。
+ */
+typedef struct {
+    uint32_t can_id;        // CAN ID，例如 0x100、0x700
+    uint8_t dlc;            // 数据长度，Classic CAN 常见为 0~8
+    uint8_t channel;        // CAN 通道编号，例如 CAN0/CAN1
+    uint32_t timestamp_ms;  // 收到或发送时的时间戳
+} EcuCanHeader;
+
+
+/*
+ * Sensor payload.
+ *
+ * 模拟一个 IMU/ADAS 类 ECU 的传感器数据。
+ */
+typedef struct {
+    int16_t accel_x_mg;       // X 轴加速度，单位 mg
+    int16_t accel_y_mg;       // Y 轴加速度，单位 mg
+    int16_t gyro_z_dps;       // Z 轴角速度，单位 degree/s
+    uint8_t sensor_status;    // 传感器状态
+    uint8_t rolling_counter;  // 滚动计数器，用于发现丢帧/重放等问题
+} EcuSensorPayload;
+
+
+/*
+ * Diagnostic request payload.
+ *
+ * 模拟 UDS 请求。
+ */
+typedef struct {
+    uint8_t sid;       // Service ID，例如 0x22、0x2E
+    uint16_t did;      // Data Identifier，例如 0xF190
+    uint8_t param[5];  // 额外参数
+} EcuDiagRequestPayload;
+
+
+/*
+ * Diagnostic response payload.
+ *
+ * UDS 正响应 SID 通常等于请求 SID + 0x40。
+ * 例如请求 0x22，正响应就是 0x62。
+ */
+typedef struct {
+    uint8_t positive_sid;
+    uint16_t did;
+    uint8_t data[5];
+} EcuDiagResponsePayload;
+
+
+/*
+ * Security event payload.
+ *
+ * 用来记录安全相关事件，例如认证失败、非法 DID 访问、重放攻击等。
+ */
+typedef struct {
+    uint16_t event_id;
+    uint8_t severity;
+    uint8_t source;
+    uint32_t detail_code;
+} EcuSecurityEventPayload;
+
+
+/*
+ * EcuPayload 使用 union。
+ *
+ * 同一块 payload 内存，可以解释成多种格式。
+ */
+typedef union {
+    uint8_t raw[8];
+
+    EcuSensorPayload sensor;
+    EcuDiagRequestPayload diag_req;
+    EcuDiagResponsePayload diag_resp;
+    EcuSecurityEventPayload security_event;
+} EcuPayload;
+
+
+/*
+ * 完整 ECU message。
+ *
+ * 这是今天最重要的产出。
+ */
+typedef struct {
+    EcuCanHeader header;  // CAN 基础信息
+    EcuMsgType type;      // 报文类型，用来解释 payload
+    EcuFlags flags;       // 内部状态标志
+    EcuPayload payload;   // 真实数据区
+    EcuStatus status;     // 处理状态
+} EcuMessage;
+
+#endif // ECU_MESSAGE_H
+```
+
+---
+
+# 8. 使用示例 1：创建一帧传感器报文
+
+```c
+#include <stdio.h>
+#include "ecu_message.h"
+
+int main(void)
+{
+    EcuMessage msg = {0};
+
+    msg.header.can_id = 0x100;
+    msg.header.dlc = 8;
+    msg.header.channel = 0;
+    msg.header.timestamp_ms = 12345;
+
+    msg.type = ECU_MSG_SENSOR;
+
+    msg.flags.valid = 1;
+    msg.flags.error = 0;
+    msg.flags.need_response = 0;
+    msg.flags.authenticated = 1;
+    msg.flags.encrypted = 0;
+    msg.flags.from_diag = 0;
+
+    msg.payload.sensor.accel_x_mg = 100;
+    msg.payload.sensor.accel_y_mg = -20;
+    msg.payload.sensor.gyro_z_dps = 3;
+    msg.payload.sensor.sensor_status = 0x01;
+    msg.payload.sensor.rolling_counter = 7;
+
+    msg.status = ECU_STATUS_OK;
+
+    printf("CAN ID: 0x%X\n", msg.header.can_id);
+    printf("Type: %d\n", msg.type);
+    printf("Accel X: %d mg\n", msg.payload.sensor.accel_x_mg);
+    printf("Valid: %d\n", msg.flags.valid);
+
+    return 0;
+}
+```
+
+这段代码做的事情很简单：
+
+> 创建一帧传感器报文，然后往里面填数据。
+
+这里你要注意 `type` 和 `payload` 的对应关系：
+
+```c
+msg.type = ECU_MSG_SENSOR;
+msg.payload.sensor.accel_x_mg = 100;
+```
+
+这两句是配套的。
+
+如果 `type` 是 `ECU_MSG_SENSOR`，那后面读 payload 时就应该读 `payload.sensor`。
+
+---
+
+# 9. 使用示例 2：创建一帧 UDS 诊断请求
+
+现在模拟一个诊断仪给 ECU 发请求：
+
+```text
+SID = 0x22
+DID = 0xF190
+```
+
+这通常可以理解为：读取某个数据标识。`0xF190` 经常被用来表示 VIN 相关信息。
+
+代码如下：
+
+```c
+EcuMessage req = {0};
+
+req.header.can_id = 0x700;
+req.header.dlc = 8;
+req.header.channel = 0;
+req.header.timestamp_ms = 20000;
+
+req.type = ECU_MSG_DIAG_REQUEST;
+
+req.flags.valid = 1;
+req.flags.need_response = 1;
+req.flags.authenticated = 0;
+req.flags.from_diag = 1;
+
+req.payload.diag_req.sid = UDS_SID_READ_DATA_BY_IDENTIFIER;
+req.payload.diag_req.did = 0xF190;
+
+req.status = ECU_STATUS_OK;
+```
+
+这里有一个安全味道很浓的点：
+
+```c
+req.flags.authenticated = 0;
+```
+
+它表示这条诊断请求目前还没有通过安全访问。
+
+读数据不一定都需要认证，但写数据、刷写、Routine Control 这类敏感操作，通常就不能随便执行。
+
+---
+
+# 10. 加一个最小安全判断
+
+现在我们加一个简单但很真实的规则：
+
+> 如果请求是 `WriteDataByIdentifier`，也就是 UDS `0x2E`，并且当前没有认证，那么拒绝执行。
+
+代码可以这样写：
+
+```c
+void check_diag_security(EcuMessage *msg)
+{
+    if (msg == NULL) {
+        return;
+    }
+
+    if (msg->type != ECU_MSG_DIAG_REQUEST) {
+        return;
+    }
+
+    if (msg->payload.diag_req.sid == UDS_SID_WRITE_DATA_BY_IDENTIFIER &&
+        msg->flags.authenticated == 0) {
+        msg->status = ECU_STATUS_AUTH_FAILED;
+        msg->flags.error = 1;
+    }
+}
+```
+
+这里用了 `->`，因为 `msg` 是指针。
+
+你可以把：
+
+```c
+msg->status
+```
+
+理解成：
+
+```text
+通过 msg 这个指针，去访问它指向的 EcuMessage 里的 status 字段。
+```
+
+如果不用指针，写法是：
+
+```c
+msg.status
+```
+
+如果是指针，写法是：
+
+```c
+msg->status
+```
+
+---
+
+# 11. 一个完整 demo：`main.c`
+
+下面这个 demo 把前面的东西串起来。
+
+```c
+#include <stdio.h>
+#include "ecu_message.h"
+
+void check_diag_security(EcuMessage *msg)
+{
+    if (msg == NULL) {
+        return;
+    }
+
+    if (msg->type != ECU_MSG_DIAG_REQUEST) {
+        return;
+    }
+
+    if (msg->payload.diag_req.sid == UDS_SID_WRITE_DATA_BY_IDENTIFIER &&
+        msg->flags.authenticated == 0) {
+        msg->status = ECU_STATUS_AUTH_FAILED;
+        msg->flags.error = 1;
+    }
+}
+
+int main(void)
+{
+    EcuMessage req = {0};
+
+    req.header.can_id = 0x700;
+    req.header.dlc = 8;
+    req.header.channel = 0;
+    req.header.timestamp_ms = 20000;
+
+    req.type = ECU_MSG_DIAG_REQUEST;
+
+    req.flags.valid = 1;
+    req.flags.need_response = 1;
+    req.flags.authenticated = 0;
+    req.flags.from_diag = 1;
+
+    req.payload.diag_req.sid = UDS_SID_WRITE_DATA_BY_IDENTIFIER;
+    req.payload.diag_req.did = 0xF190;
+
+    req.status = ECU_STATUS_OK;
+
+    check_diag_security(&req);
+
+    printf("CAN ID: 0x%X\n", req.header.can_id);
+    printf("SID: 0x%X\n", req.payload.diag_req.sid);
+    printf("DID: 0x%X\n", req.payload.diag_req.did);
+    printf("Authenticated: %d\n", req.flags.authenticated);
+    printf("Status: %d\n", req.status);
+
+    if (req.status == ECU_STATUS_AUTH_FAILED) {
+        printf("Result: reject write request because authentication failed.\n");
+    }
+
+    return 0;
+}
+```
+
+编译：
+
+```bash
+gcc main.c -o ecu_demo
+./ecu_demo
+```
+
+你大概会看到：
+
+```text
+CAN ID: 0x700
+SID: 0x2E
+DID: 0xF190
+Authenticated: 0
+Status: 3
+Result: reject write request because authentication failed.
+```
+
+这里的 `Status: 3` 对应的是：
+
+```c
+ECU_STATUS_AUTH_FAILED
+```
+
+因为 enum 从 0 开始递增：
+
+```text
+ECU_STATUS_OK             = 0
+ECU_STATUS_INVALID_DLC    = 1
+ECU_STATUS_INVALID_CAN_ID = 2
+ECU_STATUS_AUTH_FAILED    = 3
+```
+
+---
+
+# 12. 为什么这件事和嵌入式安全有关？
+
+这节表面上是在学 C 语言，实际上已经碰到了车载安全的核心问题。
+
+比如这几行：
+
+```c
+if (msg->payload.diag_req.sid == UDS_SID_WRITE_DATA_BY_IDENTIFIER &&
+    msg->flags.authenticated == 0) {
+    msg->status = ECU_STATUS_AUTH_FAILED;
+    msg->flags.error = 1;
+}
+```
+
+它背后的安全思想是：
+
+> 不是所有报文都应该被信任，不是所有诊断请求都应该被执行。
+
+一个真实 ECU 里，类似判断会更复杂：
+
+- 当前是否处于扩展诊断会话？
+- 是否通过 Security Access？
+- 这个 DID 是否允许写？
+- 当前车辆状态是否允许写？
+- 请求是否来自可信通道？
+- 是否存在重放攻击风险？
+- rolling counter 是否正常？
+- 是否需要记录安全日志？
+
+所以你现在写的这个 `EcuMessage`，后面可以继续扩展成：
+
+- 诊断访问控制模块
+- 安全事件日志模块
+- 报文解析模块
+- CAN/UDS 测试桩
+- ECU 安全状态机
+
+这就是为什么我不建议你只停留在“会写 struct”这个层面。
+
+你真正要练的是：
+
+> 用 C 语言把 ECU 里的数据、权限、状态和安全规则建模出来。
+
+---
+
+# 13. 最容易犯错的 4 个点
+
+## 13.1 错误一：以为 struct 大小等于字段相加
+
+这是初学者很常见的误区。
+
+由于内存对齐，下面这个结构体不一定是 5 字节：
+
+```c
+typedef struct {
+    uint8_t a;
+    uint32_t b;
+} Test;
+```
+
+很多平台上它可能是 8 字节。
+
+所以如果你要确认大小，可以写：
+
+```c
+printf("sizeof(Test) = %zu\n", sizeof(Test));
+```
+
+---
+
+## 13.2 错误二：直接把整个 struct 发到 CAN 总线
+
+不要这样写：
+
+```c
+send_can((uint8_t *)&msg, sizeof(msg));
+```
+
+原因是 `msg` 里面包含很多内部信息：
+
+- enum
+- bitfield
+- padding
+- status
+- timestamp
+- channel
+
+这些不一定都是 CAN payload 需要的内容。
+
+更稳的方式是自己明确打包：
+
+```c
+uint8_t can_data[8] = {0};
+
+can_data[0] = req.payload.diag_req.sid;
+can_data[1] = (uint8_t)(req.payload.diag_req.did >> 8);
+can_data[2] = (uint8_t)(req.payload.diag_req.did & 0xFF);
+```
+
+这样你才清楚知道：
+
+```text
+byte0 是 SID
+byte1 是 DID 高字节
+byte2 是 DID 低字节
+```
+
+---
+
+## 13.3 错误三：用了 union，但没有 type 标签
+
+错误写法：
+
+```c
+EcuPayload payload;
+payload.sensor.accel_x_mg = 100;
+```
+
+这段代码的问题是：别人不知道这个 payload 当前到底应该按 sensor 读，还是按 diag_req 读。
+
+正确写法：
+
+```c
+EcuMessage msg = {0};
+
+msg.type = ECU_MSG_SENSOR;
+msg.payload.sensor.accel_x_mg = 100;
+```
+
+`type` 是说明书，`payload` 是内容。
+
+---
+
+## 13.4 错误四：把 bitfield 当成协议格式
+
+bitfield 很适合内部状态：
+
+```c
+msg.flags.authenticated = 1;
+```
+
+但是如果要发到总线上，建议手动打包成 `uint8_t flags`：
+
+```c
+uint8_t flags = 0;
+
+flags |= ECU_FLAG_VALID;
+flags |= ECU_FLAG_AUTHENTICATED;
+```
+
+这样协议格式更稳定，也更容易跨平台。
+
+---
+
+# 14. 今天真正要记住什么？
+
+这节课不是为了让你机械背语法。
+
+你真正要掌握的是这套建模思路：
+
+```text
+现实中的 ECU 报文
+        ↓
+抽象成 C 语言结构体
+        ↓
+用 enum 表示类型和状态
+        ↓
+用 union 表示不同 payload 解释方式
+        ↓
+用 bitfield 表示内部标志位
+        ↓
+再加安全判断和处理状态
+```
+
+最关键的一句话：
+
+> `struct` 负责组织对象，`enum` 负责表达类型，`union` 负责复用 payload，`bitfield` 负责压缩标志位。
+
+如果你能把这句话和今天的 `EcuMessage` 对上，就说明这节课过关了。
+
+---
+
+# 15. D4 验收任务
+
+下面三个任务建议你自己敲一遍，不要只看。
+
+## 任务 1：创建一帧传感器报文
+
+要求：
+
+```text
+CAN ID = 0x100
+type = ECU_MSG_SENSOR
+accel_x = 100
+accel_y = -20
+gyro_z = 3
+valid = 1
+authenticated = 1
+```
+
+你要能写出类似：
+
+```c
+EcuMessage sensor_msg = {0};
+
+sensor_msg.header.can_id = 0x100;
+sensor_msg.header.dlc = 8;
+sensor_msg.type = ECU_MSG_SENSOR;
+sensor_msg.flags.valid = 1;
+sensor_msg.flags.authenticated = 1;
+sensor_msg.payload.sensor.accel_x_mg = 100;
+sensor_msg.payload.sensor.accel_y_mg = -20;
+sensor_msg.payload.sensor.gyro_z_dps = 3;
+```
+
+---
+
+## 任务 2：创建一帧诊断请求报文
+
+要求：
+
+```text
+CAN ID = 0x700
+type = ECU_MSG_DIAG_REQUEST
+SID = 0x22
+DID = 0xF190
+need_response = 1
+from_diag = 1
+authenticated = 0
+```
+
+要能写出类似：
+
+```c
+EcuMessage diag_req = {0};
+
+diag_req.header.can_id = 0x700;
+diag_req.header.dlc = 8;
+diag_req.type = ECU_MSG_DIAG_REQUEST;
+diag_req.flags.need_response = 1;
+diag_req.flags.from_diag = 1;
+diag_req.flags.authenticated = 0;
+diag_req.payload.diag_req.sid = UDS_SID_READ_DATA_BY_IDENTIFIER;
+diag_req.payload.diag_req.did = 0xF190;
+```
+
+---
+
+## 任务 3：加一个安全判断
+
+要求：
+
+```text
+如果是 0x2E 写 DID 请求，并且 authenticated == 0，
+则 status = ECU_STATUS_AUTH_FAILED。
+```
+
+参考代码：
+
+```c
+if (diag_req.type == ECU_MSG_DIAG_REQUEST &&
+    diag_req.payload.diag_req.sid == UDS_SID_WRITE_DATA_BY_IDENTIFIER &&
+    diag_req.flags.authenticated == 0) {
+    diag_req.status = ECU_STATUS_AUTH_FAILED;
+    diag_req.flags.error = 1;
+}
+```
+
+
+---
+

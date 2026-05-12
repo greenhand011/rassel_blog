@@ -51,17 +51,18 @@ const projectsData: Project[] = [
   {
     title: '嵌入式安全从 0 到 1',
     description:
-      '一个面向入门阶段的嵌入式安全基础系列，按教学顺序把编译、汇编、链接，程序内存布局，以及指针、数组和字符串的关系串成一条完整学习路径。',
+      '一个面向入门阶段的嵌入式安全基础系列，按教学顺序把编译、汇编、链接、程序内存布局、指针数组字符串，再到 struct、union、enum 和 bitfield 串成一条完整学习路径。',
     imgSrc: '/static/images/Linux_study/Compilation.png',
     href: '/blog/what-compilation-assembly-and-linking-actually-do',
     status: '教学系列进行中',
-    articleCount: 3,
-    period: '2026-04-11 -> 2026-04-14',
-    stack: ['C', 'Memory Layout', 'Pointers', 'Compilation'],
+    articleCount: 4,
+    period: '2026-04-11 -> 2026-05-12',
+    stack: ['C', 'Memory Layout', 'Pointers', 'Bitfield', 'Compilation'],
     articles: [
       'what-compilation-assembly-and-linking-actually-do',
       'memory-layout-fundamentals-stack-heap-and-global-static-data-areas',
       'The_Real_Relationship_Between-Pointers-Arrays-and-Strings-in-C',
+      'D4_struct_union_enum_bitfield_ECU_message',
     ],
   },
 ]
