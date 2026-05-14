@@ -1,0 +1,496 @@
+---
+title: 大小端、对齐、填充
+date: 2026-05-12
+tags:
+  - Embedded
+draft: false
+summary: 本文讲解在嵌入式系统里如何正确处理报文字段、端序、对齐与填充。
+---
+
+>报文是“按字节排队”的，C 结构体是“按 CPU 喜欢的方式排队”的。
+
+所以你不能简单地把一段 CAN/UDS/网络报文：
+```c
+uint8_t data[8];
+```
+直接强转成：
+```c
+EcuMsg *msg = (EcuMsg *)data;
+```
+这就是很多**ECU 报文解析错位的根源**。
+
+# 1. 大小端：同样两个字节，谁在前谁在后
+先看一个 2 字节数据
+假设报文里有两个字节：
+```c
+0x12 0x34
+```
+如果协议规定是 大端 Big Endian：
+```
+0x12 0x34 = 0x1234 = 4660
+```
+如果协议规定是 小端 Little Endian：
+```
+0x12 0x34 = 0x3412 = 13330
+```
+也就是说：
+
+同样的字节顺序,解释方式不同,结果完全不同
+
+## 大端是什么？
+
+**大端：高位字节在前。**
+```
+数值：0x1234
+
+内存/报文：
+[0] 0x12
+[1] 0x34
+```
+像人正常读数字：
+```
+12 34
+```
+## 小端是什么？
+**小端：低位字节在前。**
+```
+数值：0x1234
+
+内存/报文：
+[0] 0x34
+[1] 0x12
+```
+**很多 MCU、PC CPU 默认是小端，比如 x86、常见 ARM/RISC-V 配置。**
+
+### ECU 报文里为什么容易错？
+因为：
+```
+协议规定的端序 ≠ CPU 当前端序
+```
+比如 CAN 报文协议写的是：
+```
+Byte1-Byte2: speed_raw, Big Endian
+```
+但是你的 MCU 是小端。
+
+你如果直接这样读：
+```
+uint16_t speed = *(uint16_t *)&data[1];
+```
+CPU 会按自己的小端方式解释。
+
+所以：
+```
+报文：0x12 0x34
+协议想要：0x1234
+CPU 可能读成：0x3412
+```
+这不是数据错了，是你解释错了。
+
+# 2. 对齐：CPU 不喜欢变量随便放
+C 里面不同类型有不同的“对齐习惯”。
+
+常见规则：
+```
+uint8_t   可以放在任意地址
+uint16_t  喜欢放在 2 的倍数地址
+uint32_t  喜欢放在 4 的倍数地址
+```
+举个例子：
+```
+typedef struct {
+    uint8_t  a;
+    uint16_t b;
+    uint8_t  c;
+    uint32_t d;
+} Test;
+```
+你以为内存是这样：
+```
+a      b b    c      d d d d
+[0]   [1][2] [3]    [4][5][6][7]
+```
+但编译器通常会变成这样：
+```
+a    pad    b b    c    pad pad pad    d d d d
+[0]  [1]   [2][3] [4]  [5] [6] [7]   [8][9][10][11]
+```
+也就是说：
+```
+你以为 sizeof(Test) = 8
+实际可能 sizeof(Test) = 12
+```
+# 3. 填充：编译器偷偷塞进去的空字节
+
+这个 pad 就叫 padding，填充字节。
+
+它不是你写的字段。
+
+它也不是报文里的字段。
+
+是编译器为了对齐自动塞进去的。
+```
+结构体字段：
+a, b, c, d
+
+真实内存：
+a, padding, b, c, padding, d
+```
+问题来了：
+
+报文没有 padding，但结构体有 padding。
+
+所以你用结构体直接套报文时，字段就会错位。
+
+# 4. 完整 ECU 报文错位例子
+
+假设我们有一个 8 字节 ECU 状态报文：
+```
+Byte0      : msg_type
+Byte1-2    : speed_raw，大端
+Byte3      : gear
+Byte4-7    : odometer，大端
+```
+报文数据如下：
+```
+data[0] = 0x01
+data[1] = 0x12
+data[2] = 0x34
+data[3] = 0x05
+data[4] = 0x00
+data[5] = 0x00
+data[6] = 0x27
+data[7] = 0x10
+```
+按协议解释：
+```
+msg_type  = 0x01
+speed_raw = 0x1234 = 4660
+gear      = 0x05
+odometer  = 0x00002710 = 10000
+```
+错误写法：直接结构体强转
+```c
+#include <stdint.h>
+
+typedef struct {
+    uint8_t  msg_type;
+    uint16_t speed_raw;
+    uint8_t  gear;
+    uint32_t odometer;
+} EcuMsg;
+
+void parse(uint8_t *data)
+{
+    EcuMsg *msg = (EcuMsg *)data;
+
+    // 错误：字段很可能已经错位
+}
+```
+你以为结构体布局是：
+```
+offset 0: msg_type
+offset 1: speed_raw
+offset 3: gear
+offset 4: odometer
+```
+但编译器实际可能这样排：
+```
+offset 0: msg_type
+offset 1: padding
+offset 2: speed_raw
+offset 4: gear
+offset 5: padding
+offset 6: padding
+offset 7: padding
+offset 8: odometer
+```
+结构体视角：
+```
+struct EcuMsg:
+[0] msg_type
+[1] padding
+[2] speed_raw low/high
+[4] gear
+[8] odometer
+```
+报文视角：
+```
+CAN data:
+[0] msg_type
+[1] speed high
+[2] speed low
+[3] gear
+[4] odometer byte0
+[5] odometer byte1
+[6] odometer byte2
+[7] odometer byte3
+```
+错位点在这里：
+```
+协议认为 speed 从 Byte1 开始
+结构体认为 speed 从 offset 2 开始
+```
+所以 speed_raw 会拿到：
+```
+data[2] 和 data[3]
+```
+而不是：
+```
+data[1] 和 data[2]
+```
+结果：
+```
+本来 speed = 0x1234
+错误读成 speed = 0x3405 或 0x0534
+```
+这取决于 CPU 端序。
+
+# 5. 为什么报文解析会错位？
+
+核心原因有三个。
+
+**第一，协议字段是紧密排列的**
+
+报文通常是这样：
+```
+Byte0 Byte1 Byte2 Byte3 Byte4 Byte5 Byte6 Byte7
+```
+每个字节都有意义，中间不会自动插空。
+
+**第二，C 结构体会为了对齐插 padding**
+
+结构体不是为报文设计的。
+
+它是为 CPU 访问效率设计的。
+
+所以编译器可能偷偷加空洞：
+```
+Byte0 padding Byte2 Byte3 Byte4 padding padding padding Byte8...
+```
+**第三，多字节字段还有大小端问题**
+
+即使你解决了 padding：
+```
+#pragma pack(1)
+```
+或者：
+```
+__attribute__((packed))
+```
+也只是解决了结构体填充问题。
+
+没有解决大小端问题。
+
+比如：
+```
+报文是大端
+CPU 是小端
+```
+你直接读 uint16_t 还是可能读反。
+# 6. 正确写法：按字节解析
+最稳的写法是自己从 byte buffer 里取。
+```c
+#include <stdint.h>
+
+typedef struct {
+    uint8_t  msg_type;
+    uint16_t speed_raw;
+    uint8_t  gear;
+    uint32_t odometer;
+} EcuMsgParsed;
+
+static uint16_t read_u16_be(const uint8_t *p)
+{
+    return ((uint16_t)p[0] << 8) |
+           ((uint16_t)p[1]);
+}
+
+static uint32_t read_u32_be(const uint8_t *p)
+{
+    return ((uint32_t)p[0] << 24) |
+           ((uint32_t)p[1] << 16) |
+           ((uint32_t)p[2] << 8)  |
+           ((uint32_t)p[3]);
+}
+
+int parse_ecu_msg(const uint8_t data[8], EcuMsgParsed *out)
+{
+    if (data == 0 || out == 0) {
+        return -1;
+    }
+
+    out->msg_type  = data[0];
+    out->speed_raw = read_u16_be(&data[1]);
+    out->gear      = data[3];
+    out->odometer  = read_u32_be(&data[4]);
+
+    return 0;
+}
+```
+**我接下来会详细讲解这段代码**
+这段代码实现了一个安全可靠的ECU报文解析器，专门用于处理车载系统中常见的CAN/UDS等网络协议报文。它避免了直接使用结构体强转可能带来的大小端、对齐和填充问题，而是采用手动字节解析的方式确保数据读取的准确性。
+## 1. 数据结构定义
+```c
+typedef struct {
+    uint8_t  msg_type;
+    uint16_t speed_raw;
+    uint8_t  gear;
+    uint32_t odometer;
+} EcuMsgParsed;
+```
+这个结构体定义了解析后的消息格式：
+
+- msg_type：消息类型（1字节）
+- speed_raw：原始速度值（2字节）
+- gear：档位信息（1字节）
+- odometer：里程表读数（4字节）
+
+注意这个结构体名为EcuMsgParsed，表示它是**解析后的结果**，而不是直接对应报文的内存布局。
+
+## 2.大端字节序读取函数
+```c
+static uint16_t read_u16_be(const uint8_t *p)
+{
+    return ((uint16_t)p[0] << 8) |
+           ((uint16_t)p[1]);
+}
+```
+**这个函数从指针p指向的位置读取2个字节，并按照大端字节序（Big Endian）解释**：
+
+- p[0]是高字节，左移8位放到高位
+- p[1]是低字节，放在低位
+- 使用按位或操作组合成一个16位整数
+
+例如，如果报文是0x12 0x34，这个函数会返回0x1234（4660）。
+
+```c
+static uint32_t read_u32_be(const uint8_t *p)
+{
+    return ((uint32_t)p[0] << 24) |
+           ((uint32_t)p[1] << 16) |
+           ((uint32_t)p[2] << 8)  |
+           ((uint32_t)p[3]);
+}
+```
+类似的，这个函数读取4个字节并按大端字节序解释：
+
+p[0]是最高字节，左移24位
+p[1]次高字节，左移16位
+p[2]次低字节，左移8位
+p[3]是最低字节
+
+例如，如果报文是0x00 0x00 0x27 0x10，函数返回0x00002710（10000）。
+
+## 3.核心解析函数
+```c
+int parse_ecu_msg(const uint8_t data[8], EcuMsgParsed *out)
+{
+    if (data == 0 || out == 0) {
+        return -1;
+    }
+
+    out->msg_type  = data[0];
+    out->speed_raw = read_u16_be(&data[1]);
+    out->gear      = data[3];
+    out->odometer  = read_u32_be(&data[4]);
+
+    return 0;
+}
+```
+这个函数按照以下报文格式进行解析：
+```
+Byte0:      msg_type
+Byte1-2:    speed_raw（大端）
+Byte3:      gear
+Byte4-7:    odometer（大端）
+```
+解析过程详解：​
+
+- 参数检查：首先检查输入指针是否为空，防止空指针访问
+- msg_type解析：直接读取data[0]，因为它是单字节，没有大小端问题
+- speed_raw解析：从data[1]开始读取2个字节，使用read_u16_be确保按大端字节序读取
+- gear解析：直接读取data[3]
+- odometer解析：从data[4]开始读取4个字节，使用read_u32_be确保按大端字节序读取
+# 7. packed 能不能用？
+可以用，但要知道它只解决一部分问题。
+```c
+typedef struct __attribute__((packed)) {
+    uint8_t  msg_type;
+    uint16_t speed_raw;
+    uint8_t  gear;
+    uint32_t odometer;
+} EcuMsgPacked;
+```
+> **什么是packet结构体**
+packed（压缩结构体）是C/C++编译器的一个特性，它告诉编译器不要在结构体成员之间插入任何填充字节（padding），让所有成员紧密排列，没有空隙。这是通过`__attribute__((packed))（GCC/Clang）`或`#pragma pack(1)（MSVC/GCC）`等编译器指令实现的。
+
+它会让结构体尽量不插 padding。
+但是仍然有两个风险：
+```
+1. 大小端问题仍然存在
+2. 某些 MCU 上非对齐访问可能变慢，甚至 fault
+```
+所以在车载/嵌入式安全里，更推荐：
+```
+报文输入：uint8_t data[]
+解析输出：业务结构体 ParsedMsg
+```
+不要直接把报文强转成业务结构体。
+
+# 8. 排查报文错位模板
+## 第一步：看协议字段位置
+
+先画出来：
+```
+Byte0      : ?
+Byte1-2    : ?
+Byte3      : ?
+Byte4-7    : ?
+```
+不要先写结构体。
+## 第二步：确认每个多字节字段端序
+
+问自己：
+```
+uint16_t 是大端还是小端？
+uint32_t 是大端还是小端？
+信号是 Intel 格式还是 Motorola 格式？
+```
+在 CAN DBC 里常见：
+```
+Intel     通常表示小端
+Motorola  通常表示大端
+```
+## 第三步：不要直接 cast
+
+危险写法：
+```
+Msg *msg = (Msg *)data;
+```
+更稳写法：
+```
+msg.speed = read_u16_be(&data[1]);
+```
+# 第四步：检查结构体有没有 padding
+
+可以用：
+```c
+#include <stdio.h>
+#include <stddef.h>
+
+printf("msg_type offset = %zu\n", offsetof(EcuMsg, msg_type));
+printf("speed offset    = %zu\n", offsetof(EcuMsg, speed_raw));
+printf("gear offset     = %zu\n", offsetof(EcuMsg, gear));
+printf("odometer offset = %zu\n", offsetof(EcuMsg, odometer));
+printf("sizeof(EcuMsg)  = %zu\n", sizeof(EcuMsg));
+```
+如果你看到：
+```
+speed offset = 2
+```
+但协议写的是：
+```
+speed starts at Byte1
+```
+那就已经错位了。
