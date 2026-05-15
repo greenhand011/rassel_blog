@@ -51,14 +51,15 @@ const projectsData: Project[] = [
   {
     title: '嵌入式安全从 0 到 1',
     description:
-      '一个面向入门阶段的嵌入式安全基础系列，按教学顺序把编译、汇编、链接、程序内存布局、指针数组字符串，再到 struct、union、enum、bitfield、大端小端、对齐和填充串成一条完整学习路径。',
+      '一个面向入门阶段的嵌入式安全基础系列，按教学顺序把 const、volatile、static、extern，编译与链接、程序内存布局、指针数组字符串，再到 struct、union、enum、bitfield、大端小端、对齐和填充串成一条完整学习路径。',
     imgSrc: '/static/images/Linux_study/Compilation.png',
-    href: '/blog/what-compilation-assembly-and-linking-actually-do',
+    href: '/blog/const-volatile-static-extern',
     status: '教学系列进行中',
-    articleCount: 5,
-    period: '2026-04-11 -> 2026-05-12',
-    stack: ['C', 'Memory Layout', 'Pointers', 'Bitfield', 'Endianness', 'Compilation'],
+    articleCount: 6,
+    period: '2026-01-27 -> 2026-05-12',
+    stack: ['C', 'Memory Layout', 'Pointers', 'Bitfield', 'Endianness', 'Linkage'],
     articles: [
+      'const-volatile-static-extern',
       'what-compilation-assembly-and-linking-actually-do',
       'memory-layout-fundamentals-stack-heap-and-global-static-data-areas',
       'The_Real_Relationship_Between-Pointers-Arrays-and-Strings-in-C',

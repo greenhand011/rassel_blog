@@ -1,0 +1,453 @@
+---
+title: const / volatile / static / extern
+date: 2026-01-27
+tags:
+  - Embedded
+draft: false
+summary: 理解 C 语言中 const、volatile、static、extern 四个关键字在嵌入式开发中的实际作用，而非语法规则。
+---
+今天的主题不是语法，而是在嵌入式里控制变量行为
+| 关键字        | 核心作用                  | 嵌入式里常见场景          |
+| ---------- | --------------------- | ----------------- |
+| `const`    | 这个值不应该被代码改            | 配置表、协议 ID、查表参数    |
+| `volatile` | 每次都必须真的去读/写，不能被编译器优化掉 | 硬件寄存器、中断标志、DMA 状态 |
+| `static`   | 限制作用域 / 延长生命周期        | 模块内部变量、私有函数、状态保持  |
+| `extern`   | 声明“这个变量/函数在别的文件里定义”   | 多文件工程共享变量或接口      |
+# 1. const：不是“绝对不能变”，而是“这段代码不许改”        
+先看最简单的：
+```c
+const int max_speed = 120;
+
+max_speed = 130;   // 编译报错
+```
+>const 是你告诉编译器：这个变量在我的代码逻辑里应该只读。
+
+在嵌入式里常见：
+```c
+const uint16_t CAN_ID_SPEED = 0x180;
+const uint16_t CAN_ID_BRAKE = 0x181;
+const uint8_t UDS_SID_DIAGNOSTIC_SESSION_CONTROL = 0x10;
+```
+这些东西是协议常量，不应该运行中乱改。
+
+## `const` 常见指针写法
+### 情况 1：指针指向的内容不能改
+```c
+const uint8_t *p;
+```
+意思：
+```
+*p = 10;   // 不允许
+p = other; // 允许，指针可以换地方
+```
+>你可以换遥控器指向谁，但不能通过这个遥控器改里面的值。
+
+### 情况 2：指针本身不能改
+```c
+uint8_t * const p = &value;
+```
+意思：
+```c
+*p = 10;   // 允许
+p = other; // 不允许
+```
+>遥控器固定指向一个设备，但你可以操作这个设备。
+
+### 情况 3：指针和内容都不能改
+```c
+const uint8_t * const p = &value;
+```
+意思：
+```
+*p = 10;   // 不允许
+p = other; // 不允许
+```
+>遥控器不能换，设备也不能通过它改。
+
+# 2. volatile：嵌入式最重要，和寄存器强相关
+先看一个普通 C 程序：
+```c
+int flag = 0;
+
+while (flag == 0) {
+    // 等待 flag 变成 1
+}
+```
+如果编译器发现：
+```c
+flag = 0;
+while (flag == 0) {
+}
+```
+它可能会想：
+
+这个循环里面根本没人改 flag，那我没必要每次都重新读 flag。
+
+于是它可能把代码优化成类似这样：
+```c
+int temp = flag;
+
+while (temp == 0) {
+}
+```
+问题来了：
+
+如果 flag 是被 中断函数 ISR 改的呢？
+```c
+volatile int flag = 0;
+
+void ISR_Handler(void)
+{
+    flag = 1;
+}
+
+int main(void)
+{
+    while (flag == 0) {
+        // 等待中断把 flag 改成 1
+    }
+}
+```
+这里必须用：
+```c
+volatile int flag;
+```
+意思是：
+
+编译器，不要自作聪明。每次看到 flag，都必须真的去内存里重新读。
+
+## 为什么 volatile 和寄存器相关？
+
+嵌入式里的“寄存器”经常不是 CPU 里的普通变量，而是 硬件外设寄存器。
+
+比如 CAN 控制器、UART、GPIO、定时器，都有自己的寄存器。
+
+可以把它理解成：
+```
+某个固定地址 0x40006400
+不是普通 RAM
+而是 CAN 控制器的状态寄存器
+```
+比如：
+```c
+#define CAN_STATUS_REG (*(volatile uint32_t *)0x40006400)
+```
+然后你写：
+```c
+while ((CAN_STATUS_REG & 0x01) == 0) {
+    // 等待 CAN 收到报文
+}
+```
+意思是：
+
+一直读取 CAN 状态寄存器，直到 bit0 变成 1。
+
+如果不用 volatile 会发生什么？
+
+假设写成：
+```c
+#define CAN_STATUS_REG (*(uint32_t *)0x40006400)
+
+while ((CAN_STATUS_REG & 0x01) == 0) {
+}
+```
+编译器可能认为：
+
+你一直读同一个地址，代码里又没有修改它，那我读一次就够了。
+
+它可能优化成：
+```c
+uint32_t temp = CAN_STATUS_REG;
+
+while ((temp & 0x01) == 0) {
+}
+```
+这就坏了。
+
+因为硬件寄存器的值可能被 **硬件自己改变**：
+```
+CAN 控制器收到报文
+        ↓
+硬件把状态寄存器 bit0 改成 1
+        ↓
+但是你的 CPU 代码没重新读寄存器
+        ↓
+程序一直卡死
+```
+所以 volatile 的本质是：
+
+这个变量的值可能被当前 C 代码以外的东西改变，所以每次访问都必须真的发生。
+
+## 哪些东西需要 volatile？
+| 场景           | 是否需要 `volatile` | 原因                     |
+| ------------ | --------------- | ---------------------- |
+| 普通局部变量       | 通常不需要           | 只有当前代码改它               |
+| 常量配置表        | 不需要             | 用 `const`              |
+| 硬件寄存器        | 需要              | 硬件可能改变值                |
+| ISR 中断标志     | 需要              | 中断函数会异步修改              |
+| DMA 完成标志     | 需要              | DMA 控制器会修改状态           |
+| 多线程共享变量      | 不一定够            | `volatile` 不等于线程安全     |
+| RTOS 任务间共享变量 | 通常需要锁/队列/原子操作   | `volatile` 只能防优化，不能防竞争 |
+
+### 注意：volatile 不是万能的
+
+它只保证：
+**每次都真的读 / 写**
+
+它不保证：
+
+**原子性**
+**线程安全**
+**内存屏障**
+**顺序一致性**
+**数据不会被同时修改**
+
+比如：
+```c
+volatile int counter = 0;
+
+counter++;
+```
+这不是原子操作。
+
+它实际可能分成三步：
+```
+读 counter
+加 1
+写回 counter
+```
+如果中断或另一个任务同时改它，仍然可能出错。
+
+所以要记住：
+
+**volatile 是防止编译器优化，不是并发安全工具。**
+
+# 3. static：两个核心意思
+
+static 有两个常见作用，容易混。
+
+## 作用 1：局部变量保持状态
+
+普通局部变量：
+```c
+void count(void)
+{
+    int x = 0;
+    x++;
+    printf("%d\n", x);
+}
+```
+每次调用都会重新变成 0，所以每次输出：
+```
+1
+1
+1
+```
+如果加 static：
+```c
+void count(void)
+{
+    static int x = 0;
+    x++;
+    printf("%d\n", x);
+}
+```
+输出：
+```
+1
+2
+3
+```
+
+>普通局部变量是一次性纸杯，函数结束就没了。
+static 局部变量是放在柜子里的杯子，下次还能用。
+
+## 作用 2：限制文件作用域，做模块私有
+
+比如你有一个 sensor.c：
+```c
+static int sensor_error_count = 0;
+
+static void reset_sensor_internal(void)
+{
+    sensor_error_count = 0;
+}
+```
+加了 static 之后：
+```
+sensor_error_count 只能在 sensor.c 里面用
+reset_sensor_internal 只能在 sensor.c 里面调用
+```
+外部文件不能直接访问。
+
+这在嵌入式安全里很重要,因为你不希望所有文件都能乱改模块内部状态。
+
+好的模块写法
+
+sensor.h
+```c
+#ifndef SENSOR_H
+#define SENSOR_H
+
+#include <stdint.h>
+
+void Sensor_Init(void);
+uint8_t Sensor_ReadFrame(void);
+uint32_t Sensor_GetErrorCount(void);
+
+#endif
+```
+
+sensor.c
+```c
+#include "sensor.h"
+
+static uint32_t sensor_error_count = 0;
+
+static void Sensor_ResetInternalState(void)
+{
+    sensor_error_count = 0;
+}
+
+void Sensor_Init(void)
+{
+    Sensor_ResetInternalState();
+}
+
+uint8_t Sensor_ReadFrame(void)
+{
+    // 读取传感器
+    return 1;
+}
+
+uint32_t Sensor_GetErrorCount(void)
+{
+    return sensor_error_count;
+}
+```
+这里的设计很像 ECU 软件模块：
+```
+外部只能调用公开 API
+不能直接乱改内部变量
+```
+这比到处写全局变量安全很多。
+# 4. extern：告诉编译器“这个东西在别的文件里”
+
+假设你在 system.c 里定义了：
+```c
+uint32_t g_system_tick_ms = 0;
+```
+你想在 main.c 里用它，不能直接再写一次：
+```c
+uint32_t g_system_tick_ms = 0;  // 错，重复定义
+```
+而是写：
+```c
+extern uint32_t g_system_tick_ms;
+```
+意思是：
+
+这个变量不是我这里定义的，它在别的 .c 文件里定义，我这里只是声明一下。
+
+## extern 常见结构
+
+system.h
+```c
+#ifndef SYSTEM_H
+#define SYSTEM_H
+
+#include <stdint.h>
+
+extern volatile uint32_t g_system_tick_ms;
+
+#endif
+```
+system.c
+```c
+#include "system.h"
+
+volatile uint32_t g_system_tick_ms = 0;
+```
+main.c
+```c
+#include "system.h"
+
+int main(void)
+{
+    while (g_system_tick_ms < 1000) {
+        // wait
+    }
+
+    return 0;
+}
+```
+这里为什么是：
+```c
+extern volatile uint32_t g_system_tick_ms;
+```
+因为这个变量可能被定时器中断改：
+```c
+void SysTick_Handler(void)
+{
+    g_system_tick_ms++;
+}
+```
+所以：
+
+extern：这个变量在别的文件定义
+volatile：这个变量可能被中断异步修改
+
+# 5. 四个关键字放在一起看
+场景：CAN 状态寄存器
+```c
+#define CAN_STATUS_ADDR 0x40006400u
+
+static volatile uint32_t * const CAN_STATUS_REG =
+    (volatile uint32_t *)CAN_STATUS_ADDR;
+```
+这句很经典，我们拆开看。
+```c
+volatile uint32_t *
+```
+意思：
+
+>指向的是一个 volatile 的 32 位寄存器，每次读写都必须真的访问硬件地址。
+```c
+* const CAN_STATUS_REG
+```
+意思：
+
+>CAN_STATUS_REG 这个指针本身不能再指向别的地址。
+
+static
+
+意思：
+>这个指针只在当前 .c 文件里用，不暴露给其他文件。
+
+所以完整含义是：
+
+在当前驱动文件里，定义一个固定指向 CAN 状态寄存器地址的指针。这个寄存器的值可能被硬件改变，所以每次访问都必须重新读。
+
+更完整一点的驱动例子
+```c
+#include <stdint.h>
+
+#define CAN_STATUS_ADDR 0x40006400u
+#define CAN_RX_PENDING_MASK 0x01u
+
+static volatile uint32_t * const CAN_STATUS_REG =
+    (volatile uint32_t *)CAN_STATUS_ADDR;
+
+uint8_t CAN_HasRxPending(void)
+{
+    if ((*CAN_STATUS_REG & CAN_RX_PENDING_MASK) != 0u) {
+        return 1u;
+    }
+
+    return 0u;
+}
+```
+CAN_STATUS_REG 是硬件状态寄存器
+硬件收到 CAN 报文后，会自己改 bit
+C 代码必须每次真的去读
+所以要 volatile
